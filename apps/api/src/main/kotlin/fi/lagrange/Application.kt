@@ -26,6 +26,6 @@ fun main() {
     embeddedServer(Netty, port = config.port, host = config.host) {
         configureSerialization()
         configureStatusPages()
-        configureRouting(chainClient, config)
+        configureRouting(chainClient, config, strategy)
     }.start(wait = true)
 }

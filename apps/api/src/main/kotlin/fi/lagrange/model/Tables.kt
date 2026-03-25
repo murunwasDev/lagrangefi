@@ -18,6 +18,12 @@ object Positions : Table("positions") {
     override val primaryKey = PrimaryKey(id)
 }
 
+object StrategyState : Table("strategy_state") {
+    val key = varchar("key", 64)
+    val value = varchar("value", 256)
+    override val primaryKey = PrimaryKey(key)
+}
+
 object RebalanceEvents : Table("rebalance_events") {
     val id = integer("id").autoIncrement()
     val tokenId = varchar("token_id", 78)

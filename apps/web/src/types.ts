@@ -12,6 +12,8 @@ export interface PoolState {
   sqrtPriceX96: string
   tick: number
   price: string
+  decimals0: number
+  decimals1: number
 }
 
 export interface RebalanceEvent {
@@ -25,4 +27,24 @@ export interface RebalanceEvent {
   errorMessage: string | null
   triggeredAt: string
   completedAt: string | null
+}
+
+export interface StartStrategyRequest {
+  ethAmount: string
+  usdcAmount: string
+  feeTier: number
+  rangePercent: number
+}
+
+export interface StartStrategyResult {
+  success: boolean
+  tokenId?: string
+  txHashes?: string[]
+  error?: string
+}
+
+export interface CloseResult {
+  success: boolean
+  txHashes?: string[]
+  error?: string
 }

@@ -39,6 +39,23 @@ Every rebalance request from `api/` to `chain/` must include an idempotency key.
 ### OpenAPI contract
 The REST contract between `api/` and `chain/` is defined as an OpenAPI spec at `apps/chain/openapi.yaml`. This is the source of truth — do not add endpoints without updating the spec first.
 
+## CI/CD pipelines
+
+Two GitHub Actions workflows, both manual (`workflow_dispatch`) for feature branches:
+
+1. **Build and Push Images** — builds Docker images for changed services and pushes to GHCR.
+   - On `push` to `main`: only rebuilds services with changed files (path filtering via `dorny/paths-filter`).
+   - On `workflow_dispatch` (manual): always builds all three services (`api`, `chain`, `web`).
+   - `packages/shared/**` changes trigger a `chain` rebuild (shared types used by chain).
+
+2. **Deploy to Test** — patches the image tag in `k8s/overlays/test/kustomization.yaml` to the current commit SHA, generates manifests with `kubectl kustomize`, copies them to the cluster via SCP, and applies with `kubectl apply`.
+
+**To deploy a feature branch to test:**
+1. Run **Build and Push Images** on the branch — wait for it to succeed.
+2. Run **Deploy to Test** on the same branch.
+
+Test environment is at http://187.124.224.48/. There is no automatic deploy on PR push — both steps must be triggered manually.
+
 ## Kubernetes
 
 - Two namespaces: `prod` and `test`

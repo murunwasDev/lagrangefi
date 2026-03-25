@@ -235,15 +235,11 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
     publicClient.readContract({ address: token1, abi: ERC20_ABI, functionName: 'balanceOf', args: [account.address] }),
   ])
 
-  // 8. Approve position manager to spend final token balances
-  const [approveTx0, approveTx1] = await Promise.all([
-    walletClient.writeContract({ address: token0, abi: ERC20_ABI, functionName: 'approve', args: [POSITION_MANAGER, finalBalance0] }),
-    walletClient.writeContract({ address: token1, abi: ERC20_ABI, functionName: 'approve', args: [POSITION_MANAGER, finalBalance1] }),
-  ])
-  await Promise.all([
-    publicClient.waitForTransactionReceipt({ hash: approveTx0 }),
-    publicClient.waitForTransactionReceipt({ hash: approveTx1 }),
-  ])
+  // 8. Approve position manager to spend final token balances — sequential to avoid nonce collision
+  const approveTx0 = await walletClient.writeContract({ address: token0, abi: ERC20_ABI, functionName: 'approve', args: [POSITION_MANAGER, finalBalance0] })
+  await publicClient.waitForTransactionReceipt({ hash: approveTx0 })
+  const approveTx1 = await walletClient.writeContract({ address: token1, abi: ERC20_ABI, functionName: 'approve', args: [POSITION_MANAGER, finalBalance1] })
+  await publicClient.waitForTransactionReceipt({ hash: approveTx1 })
   txHashes.push(approveTx0, approveTx1)
 
   // 9. Mint new position at new range

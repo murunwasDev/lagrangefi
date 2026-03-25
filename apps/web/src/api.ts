@@ -1,4 +1,4 @@
-import type { Position, PoolState, RebalanceEvent } from './types'
+import type { Position, PoolState, RebalanceEvent, StartStrategyRequest, StartStrategyResult, CloseResult } from './types'
 
 const MOCK: {
   position: Position
@@ -18,6 +18,8 @@ const MOCK: {
     sqrtPriceX96: '1234567890123456789012345678',
     tick: 195300,
     price: '3421.58',
+    decimals0: 18,
+    decimals1: 6,
   },
   rebalances: [
     {
@@ -66,17 +68,66 @@ async function mockFetch<T>(data: T): Promise<T> {
   return data
 }
 
-export async function fetchPosition(): Promise<Position> {
+export async function fetchPosition(): Promise<Position | null> {
   if (USE_MOCK) return mockFetch(MOCK.position)
-  return fetch('/api/v1/position').then(r => r.json())
+  const resp = await fetch('/api/v1/position')
+  if (resp.status === 204) return null
+  if (!resp.ok) throw new Error(`position ${resp.status}`)
+  return resp.json()
 }
 
-export async function fetchPoolState(): Promise<PoolState> {
+export async function fetchPoolState(): Promise<PoolState | null> {
   if (USE_MOCK) return mockFetch(MOCK.poolState)
-  return fetch('/api/v1/pool-state').then(r => r.json())
+  const resp = await fetch('/api/v1/pool-state')
+  if (!resp.ok) throw new Error(`pool-state ${resp.status}`)
+  return resp.json()
 }
 
 export async function fetchRebalances(): Promise<RebalanceEvent[]> {
   if (USE_MOCK) return mockFetch(MOCK.rebalances)
-  return fetch('/api/v1/rebalances').then(r => r.json())
+  const resp = await fetch('/api/v1/rebalances')
+  if (!resp.ok) throw new Error(`rebalances ${resp.status}`)
+  return resp.json()
+}
+
+export async function startStrategy(
+  req: StartStrategyRequest,
+  onStep: (step: string) => void,
+): Promise<StartStrategyResult> {
+  if (USE_MOCK) {
+    const steps = [
+      ['Wrapping ETH → WETH', 1200],
+      ['Calculating optimal swap', 600],
+      ['Executing token swap', 1800],
+      ['Minting LP position', 1400],
+    ] as [string, number][]
+    for (const [label, ms] of steps) {
+      onStep(label)
+      await new Promise(r => setTimeout(r, ms))
+    }
+    return {
+      success: true,
+      tokenId: '12346',
+      txHashes: [
+        '0xaaa111bbb222ccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee5',
+        '0xbbb222ccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee555fff6',
+        '0xccc333ddd444eee555fff666aaa111bbb222ccc333ddd444eee555fff666aaa1',
+      ],
+    }
+  }
+  const resp = await fetch('/api/v1/strategy/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  return resp.json()
+}
+
+export async function closePosition(): Promise<CloseResult> {
+  if (USE_MOCK) {
+    await new Promise(r => setTimeout(r, 2000))
+    return { success: true, txHashes: ['0xmock000close111tx222hash333abc444def555aaa666bbb777ccc888ddd999'] }
+  }
+  const resp = await fetch('/api/v1/strategy/close', { method: 'POST' })
+  return resp.json()
 }

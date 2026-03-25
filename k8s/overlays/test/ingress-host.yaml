@@ -4,8 +4,7 @@ metadata:
   name: web
 spec:
   rules:
-    - host: test.lagrangefi.xyz
-      http:
+    - http:
         paths:
           - path: /
             pathType: Prefix

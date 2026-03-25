@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: test
+
+bases:
+  - ../../base
+
+patches:
+  - path: resources.yaml
+  - path: ingress-host.yaml
+
+# Image tags are updated automatically by CI on every push to main.
+# To deploy manually: kubectl apply -k k8s/overlays/test
+images:
+  - name: lagrangefi/api
+    newName: ghcr.io/aibob404/lagrangefi-api
+    newTag: sha-placeholder
+  - name: lagrangefi/chain
+    newName: ghcr.io/aibob404/lagrangefi-chain
+    newTag: sha-placeholder
+  - name: lagrangefi/web
+    newName: ghcr.io/aibob404/lagrangefi-web
+    newTag: sha-placeholder
+
+# Secrets for test namespace use a separate wallet with small amounts.
+# kubectl create secret generic postgres-secret -n test \
+#   --from-literal=user=lagrangefi --from-literal=password=<password>
+# kubectl create secret generic chain-secret -n test \
+#   --from-literal=WALLET_PRIVATE_KEY=<TEST_WALLET_KEY>
+# kubectl create secret generic api-secret -n test \
+#   --from-literal=DATABASE_PASSWORD=<password> \
+#   --from-literal=TELEGRAM_BOT_TOKEN=<token>

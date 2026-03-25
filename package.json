@@ -1,0 +1,8 @@
+{
+  "name": "lagrangefi-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/shared",
+    "apps/chain"
+  ]
+}

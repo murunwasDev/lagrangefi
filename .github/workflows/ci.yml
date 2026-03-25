@@ -1,0 +1,175 @@
+name: Build and Push Images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  OWNER: aibob404
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      chain: ${{ steps.filter.outputs.chain }}
+      api: ${{ steps.filter.outputs.api }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            chain:
+              - 'apps/chain/**'
+              - 'packages/shared/**'
+            api:
+              - 'apps/api/**'
+            web:
+              - 'apps/web/**'
+
+  build-chain:
+    needs: changes
+    if: needs.changes.outputs.chain == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push chain
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/chain/Dockerfile
+          push: ${{ github.event_name == 'push' }}
+          tags: ghcr.io/${{ env.OWNER }}/lagrangefi-chain:sha-${{ steps.sha.outputs.short }}
+          cache-from: type=gha,scope=chain
+          cache-to: type=gha,mode=max,scope=chain
+
+  build-api:
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push api
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/api
+          push: ${{ github.event_name == 'push' }}
+          tags: ghcr.io/${{ env.OWNER }}/lagrangefi-api:sha-${{ steps.sha.outputs.short }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+  build-web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push web
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/web
+          push: ${{ github.event_name == 'push' }}
+          tags: ghcr.io/${{ env.OWNER }}/lagrangefi-web:sha-${{ steps.sha.outputs.short }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+  update-manifests:
+    needs: [build-chain, build-api, build-web]
+    # Run if push to main and at least one image was successfully built
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      (needs.build-chain.result == 'success' || needs.build-api.result == 'success' || needs.build-web.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      # Only update tags for services that were actually rebuilt
+      - name: Update image tags in test overlay
+        run: |
+          TAG="sha-${{ steps.sha.outputs.short }}"
+          if [ "${{ needs.build-chain.result }}" = "success" ]; then
+            yq e '(.images[] | select(.name == "lagrangefi/chain") | .newTag) = "'"$TAG"'"' -i k8s/overlays/test/kustomization.yaml
+          fi
+          if [ "${{ needs.build-api.result }}" = "success" ]; then
+            yq e '(.images[] | select(.name == "lagrangefi/api") | .newTag) = "'"$TAG"'"' -i k8s/overlays/test/kustomization.yaml
+          fi
+          if [ "${{ needs.build-web.result }}" = "success" ]; then
+            yq e '(.images[] | select(.name == "lagrangefi/web") | .newTag) = "'"$TAG"'"' -i k8s/overlays/test/kustomization.yaml
+          fi
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/overlays/test/kustomization.yaml
+          git diff --staged --quiet || git commit -m "chore: update test images to sha-${{ steps.sha.outputs.short }} [skip ci]"
+          git push

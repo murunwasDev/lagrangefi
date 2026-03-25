@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chain
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chain
+  template:
+    metadata:
+      labels:
+        app: chain
+    spec:
+      containers:
+        - name: chain
+          image: lagrangefi/chain:latest
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: chain-config
+            - secretRef:
+                name: chain-secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi

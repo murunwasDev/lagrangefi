@@ -1,0 +1,26 @@
+# Node
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+
+# Kotlin / Gradle
+.gradle/
+build/
+*.class
+*.jar
+out/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# k8s secrets (never commit)
+k8s/**/secrets.yaml
+k8s/**/*-secret.yaml

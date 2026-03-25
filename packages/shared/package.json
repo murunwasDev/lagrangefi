@@ -1,0 +1,14 @@
+{
+  "name": "@lagrangefi/shared",
+  "version": "0.1.0",
+  "description": "Shared TypeScript types between web and chain",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

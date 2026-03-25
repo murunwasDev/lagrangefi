@@ -45,6 +45,13 @@ data class StartStrategyResponse(
     val error: String? = null,
 )
 
+@Serializable
+data class CloseStrategyResponse(
+    val success: Boolean,
+    val txHashes: List<String> = emptyList(),
+    val error: String? = null,
+)
+
 // WETH / USDC on Arbitrum (token0 < token1 by address)
 private const val WETH = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1"
 private const val USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
@@ -153,12 +160,21 @@ fun Application.configureRouting(chainClient: ChainClient, config: AppConfig, st
                     val result = chainClient.close(idempotencyKey, tokenId)
                     if (result.success) {
                         strategy.clearTokenId()
-                        call.respond(mapOf("success" to true, "txHashes" to result.txHashes))
+                        call.respond(CloseStrategyResponse(success = true, txHashes = result.txHashes))
                     } else {
-                        call.respond(HttpStatusCode.UnprocessableEntity, mapOf("success" to false, "error" to (result.error ?: "Close failed")))
+                        call.respond(HttpStatusCode.UnprocessableEntity, CloseStrategyResponse(success = false, error = result.error ?: "Close failed"))
                     }
                 } catch (e: Exception) {
                     call.respond(HttpStatusCode.InternalServerError, mapOf("success" to false, "error" to (e.message ?: "Unknown error")))
+                }
+            }
+
+            get("/wallet/balances") {
+                try {
+                    val balances = chainClient.getWalletBalances()
+                    call.respond(balances)
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to (e.message ?: "chain service unavailable")))
                 }
             }
 

@@ -47,6 +47,13 @@ data class CloseResponse(
 )
 
 @Serializable
+data class WalletBalancesResponse(
+    val address: String,
+    val eth: String,
+    val usdc: String,
+)
+
+@Serializable
 data class MintRequest(
     val ethAmount: String,
     val usdcAmount: String,
@@ -70,6 +77,9 @@ class ChainClient(private val baseUrl: String) {
             json(Json { ignoreUnknownKeys = true })
         }
     }
+
+    suspend fun getWalletBalances(): WalletBalancesResponse =
+        http.get("$baseUrl/wallet/balances").body()
 
     suspend fun getPosition(tokenId: String): PositionResponse =
         http.get("$baseUrl/positions/$tokenId").body()

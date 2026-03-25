@@ -1,4 +1,4 @@
-import type { Position, PoolState, RebalanceEvent, StartStrategyRequest, StartStrategyResult, CloseResult } from './types'
+import type { Position, PoolState, RebalanceEvent, StartStrategyRequest, StartStrategyResult, CloseResult, WalletBalances } from './types'
 
 const MOCK: {
   position: Position
@@ -120,6 +120,17 @@ export async function startStrategy(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   })
+  return resp.json()
+}
+
+export async function fetchWalletBalances(): Promise<WalletBalances> {
+  if (USE_MOCK) return mockFetch({
+    address: '0xDEADBEEF00000000000000000000000000000001',
+    eth: '0.1234',
+    usdc: '512.50',
+  })
+  const resp = await fetch('/api/v1/wallet/balances')
+  if (!resp.ok) throw new Error(`wallet/balances ${resp.status}`)
   return resp.json()
 }
 

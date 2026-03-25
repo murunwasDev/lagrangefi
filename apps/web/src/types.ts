@@ -48,3 +48,9 @@ export interface CloseResult {
   txHashes?: string[]
   error?: string
 }
+
+export interface WalletBalances {
+  address: string
+  eth: string
+  usdc: string
+}

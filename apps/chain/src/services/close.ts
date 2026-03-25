@@ -3,6 +3,24 @@ import type { CloseRequest, CloseResult } from '@lagrangefi/shared'
 
 // Uniswap v3 NonfungiblePositionManager on Arbitrum
 const POSITION_MANAGER = '0xC36442b4a4522E871399CD717aBDD847Ab11FE88' as const
+const WETH = '0x82af49447d8a07e3bd95bd0d56f35241523fbab1' as const
+
+const WETH_ABI = [
+  {
+    name: 'withdraw',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'wad', type: 'uint256' }],
+    outputs: [],
+  },
+  {
+    name: 'balanceOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const
 
 const POSITION_MANAGER_ABI = [
   {
@@ -131,6 +149,24 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
   })
   await publicClient.waitForTransactionReceipt({ hash: burnTx })
   txHashes.push(burnTx)
+
+  // 5. Unwrap WETH → ETH so the wallet holds native ETH for future LP starts
+  const wethBalance = await publicClient.readContract({
+    address: WETH,
+    abi: WETH_ABI,
+    functionName: 'balanceOf',
+    args: [account.address],
+  })
+  if (wethBalance > 0n) {
+    const unwrapTx = await walletClient.writeContract({
+      address: WETH,
+      abi: WETH_ABI,
+      functionName: 'withdraw',
+      args: [wethBalance],
+    })
+    await publicClient.waitForTransactionReceipt({ hash: unwrapTx })
+    txHashes.push(unwrapTx)
+  }
 
   return { success: true, txHashes }
 }

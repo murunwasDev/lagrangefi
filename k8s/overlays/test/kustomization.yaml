@@ -12,13 +12,13 @@ patches:
 images:
   - name: lagrangefi/api
     newName: ghcr.io/aibob404/lagrangefi-api
-    newTag: sha-514bd35
+    newTag: sha-10c602b
   - name: lagrangefi/chain
     newName: ghcr.io/aibob404/lagrangefi-chain
-    newTag: sha-514bd35
+    newTag: sha-10c602b
   - name: lagrangefi/web
     newName: ghcr.io/aibob404/lagrangefi-web
-    newTag: sha-514bd35
+    newTag: sha-10c602b
 # Secrets for test namespace use a separate wallet with small amounts.
 # kubectl create secret generic postgres-secret -n test \
 #   --from-literal=user=lagrangefi --from-literal=password=<password>

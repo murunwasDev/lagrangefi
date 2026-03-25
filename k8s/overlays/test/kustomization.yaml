@@ -6,7 +6,7 @@ bases:
 patches:
   - path: resources.yaml
   - path: ingress-host.yaml
-  - path: pull-secret.yaml
+  - path: image-pull.yaml
 # Image tags are updated automatically by CI on every push to main.
 # To deploy manually: kubectl apply -k k8s/overlays/test
 images:

@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chain
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: api
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          imagePullSecrets:
+            - name: ghcr-secret

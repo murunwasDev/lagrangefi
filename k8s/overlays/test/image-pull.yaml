@@ -18,14 +18,12 @@ spec:
       imagePullSecrets:
         - name: ghcr-secret
 ---
-apiVersion: batch/v1
-kind: CronJob
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: api
 spec:
-  jobTemplate:
+  template:
     spec:
-      template:
-        spec:
-          imagePullSecrets:
-            - name: ghcr-secret
+      imagePullSecrets:
+        - name: ghcr-secret

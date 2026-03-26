@@ -1,6 +1,6 @@
-import { walletClient, publicClient } from '../config.js'
+import { createWalletClientForKey, publicClient } from '../config.js'
 import { calculateSwapAmount, executeSwap, getTokenDecimals } from './swap.js'
-import type { RebalanceRequest, RebalanceResult } from '@lagrangefi/shared'
+import type { RebalanceRequest, RebalanceResult, FeesCollected } from '@lagrangefi/shared'
 
 // Uniswap v3 NonfungiblePositionManager on Arbitrum
 const POSITION_MANAGER = '0xC36442b4a4522E871399CD717aBDD847Ab11FE88' as const
@@ -112,14 +112,42 @@ const ERC20_ABI = [
   },
 ] as const
 
+// keccak256("Collect(uint256,address,uint256,uint256)")
+const COLLECT_EVENT_TOPIC = '0x40d0efd1a53d60ecbf40971b9daf7dc90178c3afa95c9f56a5c71bf52e133e41' as const
+
 const MAX_UINT128 = 2n ** 128n - 1n
 const DEADLINE_BUFFER = 300n // 5 minutes
 
+/** Sum gasUsed * effectiveGasPrice across all receipts, return total wei as bigint */
+function totalGasWei(receipts: Array<{ gasUsed: bigint; effectiveGasPrice: bigint }>): bigint {
+  return receipts.reduce((acc, r) => acc + r.gasUsed * r.effectiveGasPrice, 0n)
+}
+
+/** Parse Collect event from receipt to extract fee amounts */
+function parseCollectFees(
+  receipt: Awaited<ReturnType<typeof publicClient.waitForTransactionReceipt>>
+): FeesCollected | undefined {
+  const log = receipt.logs.find(
+    (l) =>
+      l.address.toLowerCase() === POSITION_MANAGER.toLowerCase() &&
+      l.topics[0]?.toLowerCase() === COLLECT_EVENT_TOPIC.toLowerCase()
+  )
+  if (!log || !log.data || log.data === '0x') return undefined
+
+  // data = abi.encode(amount0, amount1) — two uint256 values
+  const data = log.data.slice(2) // remove 0x
+  const amount0 = BigInt('0x' + data.slice(0, 64))
+  const amount1 = BigInt('0x' + data.slice(64, 128))
+  return { amount0: amount0.toString(), amount1: amount1.toString() }
+}
+
 export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult> {
+  const walletClient = createWalletClientForKey(req.walletPrivateKey)
   const tokenId = BigInt(req.tokenId)
   const deadline = BigInt(Math.floor(Date.now() / 1000)) + DEADLINE_BUFFER
   const account = walletClient.account!
   const txHashes: string[] = []
+  const receipts: Array<{ gasUsed: bigint; effectiveGasPrice: bigint }> = []
 
   // 1. Fetch current position
   const position = await publicClient.readContract({
@@ -147,10 +175,11 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
       deadline,
     }],
   })
-  await publicClient.waitForTransactionReceipt({ hash: decreaseTx })
+  const decreaseReceipt = await publicClient.waitForTransactionReceipt({ hash: decreaseTx })
   txHashes.push(decreaseTx)
+  receipts.push(decreaseReceipt)
 
-  // 3. Collect all tokens
+  // 3. Collect all tokens (includes accrued LP fees + withdrawn liquidity)
   const collectTx = await walletClient.writeContract({
     address: POSITION_MANAGER,
     abi: POSITION_MANAGER_ABI,
@@ -162,15 +191,19 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
       amount1Max: MAX_UINT128,
     }],
   })
-  await publicClient.waitForTransactionReceipt({ hash: collectTx })
+  const collectReceipt = await publicClient.waitForTransactionReceipt({ hash: collectTx })
   txHashes.push(collectTx)
+  receipts.push(collectReceipt)
+
+  // Parse fees from Collect event
+  const feesCollected = parseCollectFees(collectReceipt)
 
   // 4. Extract position token addresses and fee
   const token0 = position[2] as `0x${string}`
   const token1 = position[3] as `0x${string}`
   const fee = position[4]
 
-  // 5. Get token decimals (cached in production, fine to fetch here for now)
+  // 5. Get token decimals and pool state
   const [decimals0, decimals1, poolState] = await Promise.all([
     getTokenDecimals(token0),
     getTokenDecimals(token1),
@@ -225,8 +258,11 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
       amountIn: swap.amountIn,
       amountOutMinimum: swap.amountOutMinimum,
       deadline,
+      walletClient,
     })
+    const swapReceipt = await publicClient.waitForTransactionReceipt({ hash: swapTx })
     txHashes.push(swapTx)
+    receipts.push(swapReceipt)
   }
 
   // Re-fetch balances after the swap
@@ -237,10 +273,11 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
 
   // 8. Approve position manager to spend final token balances — sequential to avoid nonce collision
   const approveTx0 = await walletClient.writeContract({ address: token0, abi: ERC20_ABI, functionName: 'approve', args: [POSITION_MANAGER, finalBalance0] })
-  await publicClient.waitForTransactionReceipt({ hash: approveTx0 })
+  const approveReceipt0 = await publicClient.waitForTransactionReceipt({ hash: approveTx0 })
   const approveTx1 = await walletClient.writeContract({ address: token1, abi: ERC20_ABI, functionName: 'approve', args: [POSITION_MANAGER, finalBalance1] })
-  await publicClient.waitForTransactionReceipt({ hash: approveTx1 })
+  const approveReceipt1 = await publicClient.waitForTransactionReceipt({ hash: approveTx1 })
   txHashes.push(approveTx0, approveTx1)
+  receipts.push(approveReceipt0, approveReceipt1)
 
   // 9. Mint new position at new range
   const mintTx = await walletClient.writeContract({
@@ -263,13 +300,17 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
   })
   const mintReceipt = await publicClient.waitForTransactionReceipt({ hash: mintTx })
   txHashes.push(mintTx)
+  receipts.push(mintReceipt)
 
-  // Parse new tokenId from Transfer event (ERC721)
-  // The new tokenId is emitted as the third topic of the Transfer event
+  // Parse new tokenId from Transfer event (ERC721 topic[3] = tokenId)
   const transferLog = mintReceipt.logs.find(
-    (log) => log.address.toLowerCase() === POSITION_MANAGER.toLowerCase() && log.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+    (log) =>
+      log.address.toLowerCase() === POSITION_MANAGER.toLowerCase() &&
+      log.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
   )
   const newTokenId = transferLog?.topics[3] ? BigInt(transferLog.topics[3]).toString() : undefined
 
-  return { success: true, txHashes, newTokenId }
+  const gasUsedWei = totalGasWei(receipts).toString()
+
+  return { success: true, txHashes, newTokenId, feesCollected, gasUsedWei }
 }

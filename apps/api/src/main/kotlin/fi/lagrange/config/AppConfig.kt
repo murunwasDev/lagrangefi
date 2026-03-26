@@ -9,7 +9,8 @@ data class AppConfig(
     val chainServiceUrl: String,
     val database: DatabaseSettings,
     val telegram: TelegramSettings,
-    val rebalancer: RebalancerSettings,
+    val jwt: JwtSettings,
+    val wallet: WalletSettings,
 ) {
     companion object {
         fun load(): AppConfig =
@@ -32,9 +33,11 @@ data class TelegramSettings(
     val chatId: String,
 )
 
-data class RebalancerSettings(
-    val positionTokenId: String,
-    val rangePercent: Double = 0.05, // 5% each side
-    val pollIntervalSeconds: Long = 60,
-    val slippageTolerance: Double = 0.005, // 0.5%
+data class JwtSettings(
+    val secret: String,
+)
+
+data class WalletSettings(
+    /** Base64-encoded 32-byte AES-256 key for encrypting wallet phrases at rest */
+    val encryptionKey: String,
 )

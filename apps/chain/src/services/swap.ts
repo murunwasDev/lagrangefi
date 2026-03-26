@@ -1,4 +1,6 @@
-import { walletClient, publicClient } from '../config.js'
+import { publicClient, createWalletClientForKey } from '../config.js'
+
+type WalletClientWithChain = ReturnType<typeof createWalletClientForKey>
 
 // Uniswap v3 SwapRouter on Arbitrum
 const SWAP_ROUTER = '0xE592427A0AEce92De3Edee1F18E0157C05861564' as const
@@ -159,7 +161,9 @@ export async function executeSwap(params: {
   amountIn: bigint
   amountOutMinimum: bigint
   deadline: bigint
+  walletClient: WalletClientWithChain
 }): Promise<`0x${string}`> {
+  const { walletClient } = params
   const account = walletClient.account!
 
   // Approve SwapRouter to spend tokenIn

@@ -1,9 +1,12 @@
 package fi.lagrange.strategy
 
-// Extension point for v2 (DeltaNeutralStrategy) and beyond.
-// All strategies implement this interface — the scheduler calls execute() on a timer.
+import fi.lagrange.services.StrategyRecord
+
+/**
+ * Extension point for v2 (DeltaNeutralStrategy) and beyond.
+ * Each strategy type implements execute() with its own logic.
+ * Scheduling is handled centrally by StrategyScheduler.
+ */
 interface ProtocolStrategy {
-    suspend fun execute()
-    fun startScheduler()
-    fun stopScheduler()
+    suspend fun execute(strategy: StrategyRecord, walletPhrase: String)
 }

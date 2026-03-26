@@ -19,11 +19,37 @@ images:
   - name: lagrangefi/web
     newName: ghcr.io/aibob404/lagrangefi-web
     newTag: sha-10c602b
-# Secrets for test namespace use a separate wallet with small amounts.
-# kubectl create secret generic postgres-secret -n test \
-#   --from-literal=user=lagrangefi --from-literal=password=<password>
-# kubectl create secret generic chain-secret -n test \
-#   --from-literal=WALLET_PRIVATE_KEY=<TEST_WALLET_KEY>
-# kubectl create secret generic api-secret -n test \
-#   --from-literal=DATABASE_PASSWORD=<password> \
-#   --from-literal=TELEGRAM_BOT_TOKEN=<token>
+
+# ─── Secrets ──────────────────────────────────────────────────────────────────
+#
+# postgres-secret
+#   kubectl create secret generic postgres-secret -n test \
+#     --from-literal=user=lagrangefi \
+#     --from-literal=password=<DB_PASSWORD>
+#
+# api-secret
+#   kubectl create secret generic api-secret -n test \
+#     --from-literal=DATABASE_PASSWORD=<DB_PASSWORD> \
+#     --from-literal=TELEGRAM_BOT_TOKEN=<TOKEN> \
+#     --from-literal=JWT_SECRET=<random 64-char string> \
+#     --from-literal=WALLET_ENCRYPTION_KEY=<base64 of 32 random bytes>
+#
+#   Generate WALLET_ENCRYPTION_KEY:  openssl rand -base64 32
+#   Generate JWT_SECRET:             openssl rand -hex 32
+#
+# chain-secret is NO LONGER NEEDED.
+#   Wallet private keys are provided per-request by the api service.
+#
+# ─── ConfigMaps ───────────────────────────────────────────────────────────────
+#
+# api-config
+#   kubectl create configmap api-config -n test \
+#     --from-literal=CHAIN_SERVICE_URL=http://chain:3001 \
+#     --from-literal=DATABASE_URL=postgresql://postgres:5432/lagrangefi \
+#     --from-literal=DATABASE_USER=lagrangefi \
+#     --from-literal=TELEGRAM_CHAT_ID=<chat_id>
+#
+# chain-config
+#   kubectl create configmap chain-config -n test \
+#     --from-literal=ARBITRUM_RPC_URL=https://arb-mainnet.g.alchemy.com/v2/<key> \
+#     --from-literal=PORT=3001

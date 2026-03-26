@@ -12,8 +12,9 @@ telegram:
   botToken: ${TELEGRAM_BOT_TOKEN}
   chatId: ${TELEGRAM_CHAT_ID}
 
-rebalancer:
-  positionTokenId: ${UNISWAP_POSITION_TOKEN_ID}
-  rangePercent: ${REBALANCER_RANGE_PERCENT:-0.05}
-  pollIntervalSeconds: ${REBALANCER_POLL_INTERVAL:-60}
-  slippageTolerance: ${REBALANCER_SLIPPAGE_TOLERANCE:-0.005}
+jwt:
+  secret: ${JWT_SECRET}
+
+wallet:
+  # Base64-encoded 32-byte key. Generate with: openssl rand -base64 32
+  encryptionKey: ${WALLET_ENCRYPTION_KEY}

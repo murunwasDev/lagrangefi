@@ -1,4 +1,4 @@
-// Shared types between web/ and chain/
+// Shared types between web/ and chain/ and api/
 
 export interface Position {
   tokenId: string
@@ -25,6 +25,13 @@ export interface RebalanceRequest {
   newTickLower: number
   newTickUpper: number
   slippageTolerance: number // e.g. 0.005 = 0.5%
+  /** Per-request wallet: private key (0x...) or BIP39 mnemonic phrase */
+  walletPrivateKey?: string
+}
+
+export interface FeesCollected {
+  amount0: string // raw token amount (e.g. "1500000" for 1.5 USDC)
+  amount1: string
 }
 
 export interface RebalanceResult {
@@ -32,6 +39,10 @@ export interface RebalanceResult {
   txHashes: string[]
   newTokenId?: string
   error?: string
+  /** Fees collected during the collect step (from on-chain Collect event) */
+  feesCollected?: FeesCollected
+  /** Total gas cost across all transactions, in wei */
+  gasUsedWei?: string
 }
 
 export interface MintRequest {
@@ -41,6 +52,8 @@ export interface MintRequest {
   tickLower: number
   tickUpper: number
   slippageTolerance: number
+  /** Per-request wallet: private key (0x...) or BIP39 mnemonic phrase */
+  walletPrivateKey?: string
 }
 
 export interface MintResult {
@@ -69,4 +82,77 @@ export interface ExecuteStep {
 export interface ExecuteRequest {
   idempotencyKey: string
   steps: ExecuteStep[]
+}
+
+// --- User / Auth ---
+
+export interface User {
+  id: number
+  username: string
+  hasWallet: boolean
+  createdAt: string
+}
+
+// --- Strategy ---
+
+export type StrategyStatus = 'active' | 'paused' | 'stopped'
+
+export interface Strategy {
+  id: number
+  userId: number
+  name: string
+  currentTokenId: string
+  token0: string
+  token1: string
+  fee: number
+  rangePercent: number
+  slippageTolerance: number
+  pollIntervalSeconds: number
+  status: StrategyStatus
+  createdAt: string
+  stoppedAt: string | null
+}
+
+export interface CreateStrategyRequest {
+  name: string
+  tokenId: string
+  rangePercent?: number       // default 0.05 (5%)
+  slippageTolerance?: number  // default 0.005 (0.5%)
+  pollIntervalSeconds?: number // default 60
+}
+
+// --- Strategy Stats ---
+
+export interface StrategyStats {
+  strategyId: number
+  totalRebalances: number
+  /** Raw token amounts as decimal strings */
+  feesCollectedToken0: string
+  feesCollectedToken1: string
+  /** Total gas cost across all rebalances, in wei */
+  gasCostWei: string
+  /** Tick-based time-in-range tracking */
+  totalPollTicks: number
+  inRangeTicks: number
+  timeInRangePct: number
+  /** Computed metrics */
+  avgRebalanceIntervalHours: number | null
+  updatedAt: string
+}
+
+export interface RebalanceEventDto {
+  id: number
+  strategyId: number
+  tokenId: string
+  status: 'pending' | 'success' | 'failed'
+  newTickLower: number | null
+  newTickUpper: number | null
+  newTokenId: string | null
+  txHashes: string | null
+  feesCollectedToken0: string | null
+  feesCollectedToken1: string | null
+  gasCostWei: string | null
+  errorMessage: string | null
+  triggeredAt: string
+  completedAt: string | null
 }

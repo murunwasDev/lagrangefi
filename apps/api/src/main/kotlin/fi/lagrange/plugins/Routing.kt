@@ -1,204 +1,280 @@
 package fi.lagrange.plugins
 
-import fi.lagrange.config.AppConfig
-import fi.lagrange.model.RebalanceEvents
+import fi.lagrange.auth.authRoutes
+import fi.lagrange.auth.getUserId
 import fi.lagrange.services.ChainClient
-import fi.lagrange.services.MintRequest
-import java.util.UUID
-import fi.lagrange.strategy.UniswapStrategy
+import fi.lagrange.services.StrategyService
+import fi.lagrange.services.UserService
+import fi.lagrange.services.WalletService
+import fi.lagrange.strategy.StrategyScheduler
 import io.ktor.http.*
 import io.ktor.server.application.*
+import io.ktor.server.auth.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.transactions.transaction
 
 @Serializable
-data class RebalanceEventDto(
-    val id: Int,
+data class CreateStrategyRequestDto(
+    val name: String,
     val tokenId: String,
-    val status: String,
-    val newTickLower: Int?,
-    val newTickUpper: Int?,
-    val newTokenId: String?,
-    val txHashes: String?,
-    val errorMessage: String?,
-    val triggeredAt: String,
-    val completedAt: String?,
-)
-
-@Serializable
-data class StartStrategyRequest(
-    val ethAmount: String = "0",
-    val usdcAmount: String = "0",
-    val feeTier: Int = 500,
     val rangePercent: Double = 0.05,
+    val slippageTolerance: Double = 0.005,
+    val pollIntervalSeconds: Long = 60,
 )
 
 @Serializable
-data class StartStrategyResponse(
-    val success: Boolean,
-    val tokenId: String? = null,
-    val txHashes: List<String> = emptyList(),
-    val error: String? = null,
+data class StartStrategyRequestDto(
+    val name: String,
+    val ethAmount: String,
+    val usdcAmount: String,
+    val feeTier: Int,
+    val rangePercent: Double = 0.05,
+    val slippageTolerance: Double = 0.005,
+    val pollIntervalSeconds: Long = 60,
 )
 
 @Serializable
-data class CloseStrategyResponse(
-    val success: Boolean,
-    val txHashes: List<String> = emptyList(),
-    val error: String? = null,
+data class StartStrategyResponseDto(
+    val tokenId: String,
+    val txHashes: List<String>,
 )
 
-// WETH / USDC on Arbitrum (token0 < token1 by address)
-private const val WETH = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1"
-private const val USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
+private val WETH = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1"
+private val USDC = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
 
-fun Application.configureRouting(chainClient: ChainClient, config: AppConfig, strategy: UniswapStrategy) {
+private fun calcTicks(currentTick: Int, rangePercent: Double, feeTier: Int): Pair<Int, Int> {
+    val spacing = when (feeTier) { 100 -> 1; 500 -> 10; 3000 -> 60; else -> 200 }
+    val log1_0001 = Math.log(1.0001)
+    val rawLower = currentTick + (Math.log(1.0 - rangePercent) / log1_0001).toInt()
+    val rawUpper = currentTick + Math.ceil(Math.log(1.0 + rangePercent) / log1_0001).toInt()
+    val tickLower = Math.floorDiv(rawLower, spacing) * spacing
+    val tickUpper = (Math.floorDiv(rawUpper, spacing) + 1) * spacing
+    return Pair(tickLower, tickUpper)
+}
+
+fun Application.configureRouting(
+    chainClient: ChainClient,
+    userService: UserService,
+    walletService: WalletService,
+    strategyService: StrategyService,
+    scheduler: StrategyScheduler,
+) {
     routing {
         get("/health") {
             call.respond(mapOf("status" to "ok"))
         }
 
-        route("/api/v1") {
-            get("/status") {
-                call.respond(mapOf("rebalancer" to "running"))
-            }
+        // Auth routes (public + protected /me routes)
+        authRoutes(userService, walletService, chainClient)
 
-            get("/position") {
-                val tokenId = strategy.currentTokenId
-                if (tokenId.isBlank()) {
-                    call.respond(HttpStatusCode.NoContent)
-                    return@get
-                }
-                try {
-                    val position = chainClient.getPosition(tokenId)
-                    call.respond(position)
-                } catch (e: Exception) {
-                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to (e.message ?: "chain service unavailable")))
-                }
-            }
+        authenticate("jwt") {
+            route("/api/v1") {
 
-            get("/pool-state") {
-                try {
-                    val tokenId = strategy.currentTokenId
-                    val poolState = if (tokenId.isBlank()) {
-                        chainClient.getPoolByPair(WETH, USDC, 500)
-                    } else {
-                        chainClient.getPoolState(tokenId)
+                // --- Position / Pool (for active strategy of current user) ---
+
+                get("/position") {
+                    val userId = call.getUserId()
+                    val strategy = strategyService.listForUser(userId)
+                        .firstOrNull { it.status == "active" }
+                        ?: return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "No active strategy"))
+                    try {
+                        val position = chainClient.getPosition(strategy.currentTokenId)
+                        call.respond(position)
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to (e.message ?: "chain service unavailable")))
                     }
-                    call.respond(poolState)
-                } catch (e: Exception) {
-                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to (e.message ?: "chain service unavailable")))
                 }
-            }
 
-            post("/strategy/start") {
-                val req = call.receive<StartStrategyRequest>()
-                try {
-                    // 1. Fetch current pool state to get current tick
-                    val poolState = chainClient.getPoolByPair(WETH, USDC, req.feeTier)
+                get("/pool-state") {
+                    val userId = call.getUserId()
+                    val strategy = strategyService.listForUser(userId)
+                        .firstOrNull { it.status == "active" }
+                        ?: return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "No active strategy"))
+                    try {
+                        val poolState = chainClient.getPoolState(strategy.currentTokenId)
+                        call.respond(poolState)
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to (e.message ?: "chain service unavailable")))
+                    }
+                }
 
-                    // 2. Calculate tick range
-                    val (tickLower, tickUpper) = strategy.calculateRange(
-                        poolState.tick, req.feeTier, req.rangePercent
-                    )
+                // --- Strategies ---
 
-                    // 3. Mint the position on-chain
-                    val mintResult = chainClient.mint(MintRequest(
-                        ethAmount = req.ethAmount,
-                        usdcAmount = req.usdcAmount,
-                        feeTier = req.feeTier,
-                        tickLower = tickLower,
-                        tickUpper = tickUpper,
-                        slippageTolerance = config.rebalancer.slippageTolerance,
-                    ))
+                get("/strategies") {
+                    val userId = call.getUserId()
+                    call.respond(strategyService.listForUser(userId))
+                }
 
-                    if (mintResult.success && mintResult.tokenId != null) {
-                        // 4. Update the active position the strategy is tracking
-                        strategy.updateTokenId(mintResult.tokenId)
-                        call.respond(StartStrategyResponse(
-                            success = true,
+                // Mint a new position from scratch, then register it as a strategy
+                post("/strategies/start") {
+                    val userId = call.getUserId()
+                    val phrase = walletService.getDecryptedPhrase(userId)
+                        ?: return@post call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Configure a wallet before creating a strategy"))
+                    val req = call.receive<StartStrategyRequestDto>()
+
+                    // Get current pool price to calculate tick range
+                    val poolState = try {
+                        chainClient.getPoolByPair(WETH, USDC, req.feeTier)
+                    } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Could not fetch pool state: ${e.message}"))
+                    }
+
+                    val (tickLower, tickUpper) = calcTicks(poolState.tick, req.rangePercent, req.feeTier)
+
+                    val mintResult = try {
+                        chainClient.mint(fi.lagrange.services.MintRequest(
+                            ethAmount = req.ethAmount,
+                            usdcAmount = req.usdcAmount,
+                            feeTier = req.feeTier,
+                            tickLower = tickLower,
+                            tickUpper = tickUpper,
+                            slippageTolerance = req.slippageTolerance,
+                            walletPrivateKey = phrase,
+                        ))
+                    } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Mint failed: ${e.message}"))
+                    }
+
+                    if (!mintResult.success || mintResult.tokenId == null) {
+                        return@post call.respond(HttpStatusCode.InternalServerError, mapOf("error" to (mintResult.error ?: "Mint failed")))
+                    }
+
+                    // Resolve token0/token1/fee from the minted position
+                    val position = try {
+                        chainClient.getPosition(mintResult.tokenId)
+                    } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to "Position minted but could not fetch details: ${e.message}"))
+                    }
+
+                    try {
+                        val strategy = strategyService.create(
+                            userId = userId,
+                            name = req.name,
+                            tokenId = mintResult.tokenId,
+                            token0 = position.token0,
+                            token1 = position.token1,
+                            fee = position.fee,
+                            rangePercent = req.rangePercent,
+                            slippageTolerance = req.slippageTolerance,
+                            pollIntervalSeconds = req.pollIntervalSeconds,
+                        )
+                        scheduler.start(strategy)
+                        call.respond(HttpStatusCode.Created, StartStrategyResponseDto(
                             tokenId = mintResult.tokenId,
                             txHashes = mintResult.txHashes,
                         ))
-                    } else {
-                        call.respond(HttpStatusCode.UnprocessableEntity, StartStrategyResponse(
-                            success = false,
-                            error = mintResult.error ?: "Mint returned no tokenId",
-                        ))
+                    } catch (e: IllegalArgumentException) {
+                        call.respond(HttpStatusCode.Conflict, mapOf("error" to e.message))
                     }
-                } catch (e: Exception) {
-                    call.respond(HttpStatusCode.InternalServerError, StartStrategyResponse(
-                        success = false,
-                        error = e.message ?: "Unknown error",
-                    ))
                 }
-            }
 
-            put("/strategy/token-id") {
-                val body = call.receive<Map<String, String>>()
-                val tokenId = body["tokenId"]
-                if (tokenId.isNullOrBlank()) {
-                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "tokenId is required"))
-                    return@put
-                }
-                strategy.updateTokenId(tokenId)
-                call.respond(mapOf("tokenId" to tokenId))
-            }
-
-            post("/strategy/close") {
-                val tokenId = strategy.currentTokenId
-                if (tokenId.isBlank()) {
-                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "No active position to close"))
-                    return@post
-                }
-                try {
-                    val idempotencyKey = UUID.randomUUID().toString()
-                    val result = chainClient.close(idempotencyKey, tokenId)
-                    if (result.success) {
-                        strategy.clearTokenId()
-                        call.respond(CloseStrategyResponse(success = true, txHashes = result.txHashes))
-                    } else {
-                        call.respond(HttpStatusCode.UnprocessableEntity, CloseStrategyResponse(success = false, error = result.error ?: "Close failed"))
+                post("/strategies") {
+                    val userId = call.getUserId()
+                    if (!walletService.hasWallet(userId)) {
+                        return@post call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Configure a wallet before creating a strategy"))
                     }
-                } catch (e: Exception) {
-                    call.respond(HttpStatusCode.InternalServerError, mapOf("success" to false, "error" to (e.message ?: "Unknown error")))
-                }
-            }
+                    val req = call.receive<CreateStrategyRequestDto>()
 
-            get("/wallet/balances") {
-                try {
-                    val balances = chainClient.getWalletBalances()
-                    call.respond(balances)
-                } catch (e: Exception) {
-                    call.respond(HttpStatusCode.ServiceUnavailable, mapOf("error" to (e.message ?: "chain service unavailable")))
-                }
-            }
+                    // Resolve token0/token1/fee from the chain service
+                    val position = try {
+                        chainClient.getPosition(req.tokenId)
+                    } catch (e: Exception) {
+                        return@post call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Could not fetch position from chain: ${e.message}"))
+                    }
 
-            get("/rebalances") {
-                val events = transaction {
-                    RebalanceEvents.selectAll()
-                        .orderBy(RebalanceEvents.triggeredAt, org.jetbrains.exposed.sql.SortOrder.DESC)
-                        .limit(50)
-                        .map { row ->
-                            RebalanceEventDto(
-                                id = row[RebalanceEvents.id],
-                                tokenId = row[RebalanceEvents.tokenId],
-                                status = row[RebalanceEvents.status],
-                                newTickLower = row[RebalanceEvents.newTickLower],
-                                newTickUpper = row[RebalanceEvents.newTickUpper],
-                                newTokenId = row[RebalanceEvents.newTokenId],
-                                txHashes = row[RebalanceEvents.txHashes],
-                                errorMessage = row[RebalanceEvents.errorMessage],
-                                triggeredAt = row[RebalanceEvents.triggeredAt].toString(),
-                                completedAt = row[RebalanceEvents.completedAt]?.toString(),
-                            )
-                        }
+                    try {
+                        val strategy = strategyService.create(
+                            userId = userId,
+                            name = req.name,
+                            tokenId = req.tokenId,
+                            token0 = position.token0,
+                            token1 = position.token1,
+                            fee = position.fee,
+                            rangePercent = req.rangePercent,
+                            slippageTolerance = req.slippageTolerance,
+                            pollIntervalSeconds = req.pollIntervalSeconds,
+                        )
+                        scheduler.start(strategy)
+                        call.respond(HttpStatusCode.Created, strategy)
+                    } catch (e: IllegalArgumentException) {
+                        call.respond(HttpStatusCode.Conflict, mapOf("error" to e.message))
+                    }
                 }
-                call.respond(events)
+
+                get("/strategies/{id}") {
+                    val userId = call.getUserId()
+                    val strategyId = call.parameters["id"]?.toIntOrNull()
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid strategy id"))
+                    val strategy = strategyService.findById(strategyId, userId)
+                        ?: return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "Strategy not found"))
+                    call.respond(strategy)
+                }
+
+                patch("/strategies/{id}/pause") {
+                    val userId = call.getUserId()
+                    val strategyId = call.parameters["id"]?.toIntOrNull()
+                        ?: return@patch call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid strategy id"))
+                    val ok = strategyService.pause(strategyId, userId)
+                    if (!ok) return@patch call.respond(HttpStatusCode.NotFound, mapOf("error" to "Strategy not found or not active"))
+                    scheduler.stop(strategyId)
+                    call.respond(mapOf("status" to "paused"))
+                }
+
+                patch("/strategies/{id}/resume") {
+                    val userId = call.getUserId()
+                    val strategyId = call.parameters["id"]?.toIntOrNull()
+                        ?: return@patch call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid strategy id"))
+                    try {
+                        val ok = strategyService.resume(strategyId, userId)
+                        if (!ok) return@patch call.respond(HttpStatusCode.NotFound, mapOf("error" to "Strategy not found or not paused"))
+                        val strategy = strategyService.findById(strategyId, userId)!!
+                        scheduler.start(strategy)
+                        call.respond(mapOf("status" to "active"))
+                    } catch (e: IllegalArgumentException) {
+                        call.respond(HttpStatusCode.Conflict, mapOf("error" to e.message))
+                    }
+                }
+
+                delete("/strategies/{id}") {
+                    val userId = call.getUserId()
+                    val strategyId = call.parameters["id"]?.toIntOrNull()
+                        ?: return@delete call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid strategy id"))
+                    val ok = strategyService.stop(strategyId, userId)
+                    if (!ok) return@delete call.respond(HttpStatusCode.NotFound, mapOf("error" to "Strategy not found"))
+                    scheduler.stop(strategyId)
+                    call.respond(mapOf("status" to "stopped"))
+                }
+
+                // --- Strategy stats and history ---
+
+                get("/strategies/{id}/stats") {
+                    val userId = call.getUserId()
+                    val strategyId = call.parameters["id"]?.toIntOrNull()
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid strategy id"))
+                    val stats = strategyService.getStats(strategyId, userId)
+                        ?: return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "Strategy not found"))
+                    call.respond(stats)
+                }
+
+                get("/strategies/{id}/rebalances") {
+                    val userId = call.getUserId()
+                    val strategyId = call.parameters["id"]?.toIntOrNull()
+                        ?: return@get call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid strategy id"))
+                    val events = strategyService.getRebalanceHistory(strategyId, userId)
+                        ?: return@get call.respond(HttpStatusCode.NotFound, mapOf("error" to "Strategy not found"))
+                    call.respond(events)
+                }
+
+                // Legacy: rebalances for the user's active strategy
+                get("/rebalances") {
+                    val userId = call.getUserId()
+                    val strategy = strategyService.listForUser(userId).firstOrNull()
+                        ?: return@get call.respond(emptyList<Unit>())
+                    val events = strategyService.getRebalanceHistory(strategy.id, userId) ?: emptyList()
+                    call.respond(events)
+                }
             }
         }
     }

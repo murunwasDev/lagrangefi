@@ -18,6 +18,7 @@ export const executeRoutes: FastifyPluginAsync = async (server) => {
     processedKeys.add(req.idempotencyKey)
 
     try {
+      // walletPrivateKey (private key or BIP39 mnemonic) is forwarded from the API per-request
       const result = await rebalance(req)
       return result
     } catch (err) {

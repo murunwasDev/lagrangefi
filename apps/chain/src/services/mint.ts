@@ -1,5 +1,5 @@
 import { parseEther, parseUnits } from 'viem'
-import { walletClient, publicClient } from '../config.js'
+import { createWalletClientForKey, publicClient } from '../config.js'
 import { calculateSwapAmount, executeSwap, getTokenDecimals } from './swap.js'
 import { getPoolStateByPair } from './uniswap.js'
 import type { MintRequest, MintResult } from '@lagrangefi/shared'
@@ -72,6 +72,7 @@ const POSITION_MANAGER_ABI = [
 const DEADLINE_BUFFER = 300n
 
 export async function mintPosition(req: MintRequest): Promise<MintResult> {
+  const walletClient = createWalletClientForKey(req.walletPrivateKey)
   const account = walletClient.account!
   const txHashes: string[] = []
   const deadline = BigInt(Math.floor(Date.now() / 1000)) + DEADLINE_BUFFER
@@ -128,6 +129,7 @@ export async function mintPosition(req: MintRequest): Promise<MintResult> {
       amountIn: swap.amountIn,
       amountOutMinimum: swap.amountOutMinimum,
       deadline,
+      walletClient,
     })
     txHashes.push(swapTx)
   }

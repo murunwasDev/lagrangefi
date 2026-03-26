@@ -20,8 +20,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: chain-config
-            - secretRef:
-                name: chain-secret
+          # No secrets needed: wallet keys are provided per-request by the api service.
+          # WALLET_PRIVATE_KEY env var is no longer used.
           resources:
             requests:
               cpu: 100m

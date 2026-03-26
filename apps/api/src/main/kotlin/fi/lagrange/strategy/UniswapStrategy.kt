@@ -1,103 +1,38 @@
 package fi.lagrange.strategy
 
-import fi.lagrange.config.AppConfig
-import fi.lagrange.model.StrategyState
+import fi.lagrange.model.RebalanceEvents
 import fi.lagrange.services.ChainClient
+import fi.lagrange.services.StrategyRecord
+import fi.lagrange.services.StrategyService
 import fi.lagrange.services.TelegramNotifier
-import kotlinx.coroutines.runBlocking
-import org.jetbrains.exposed.sql.selectAll
+import kotlinx.datetime.Clock
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.transactions.transaction
-import org.jetbrains.exposed.sql.upsert
+import org.jetbrains.exposed.sql.update
 import org.slf4j.LoggerFactory
-import java.util.Timer
 import java.util.UUID
-import kotlin.concurrent.fixedRateTimer
-import kotlin.math.pow
 
+/**
+ * Executes one rebalance check/cycle for a single strategy.
+ * No scheduler logic here — that lives in StrategyScheduler.
+ */
 class UniswapStrategy(
     private val chainClient: ChainClient,
     private val telegram: TelegramNotifier,
-    private val config: AppConfig,
-) : ProtocolStrategy {
-
-    companion object {
-        private const val ACTIVE_TOKEN_ID_KEY = "active_token_id"
-    }
-
+    private val strategyService: StrategyService,
+) {
     private val log = LoggerFactory.getLogger(UniswapStrategy::class.java)
-    private var timer: Timer? = null
 
-    @Volatile
-    private var activeTokenId: String = config.rebalancer.positionTokenId
-
-    init {
-        val persisted = transaction {
-            StrategyState.selectAll()
-                .where { StrategyState.key eq ACTIVE_TOKEN_ID_KEY }
-                .singleOrNull()
-                ?.get(StrategyState.value)
-        }
-        if (persisted != null) {
-            activeTokenId = persisted
-            log.info("Loaded activeTokenId=$persisted from DB")
-        }
-    }
-
-    val currentTokenId: String get() = activeTokenId
-
-    fun clearTokenId() {
-        activeTokenId = ""
-        transaction {
-            StrategyState.upsert {
-                it[key] = ACTIVE_TOKEN_ID_KEY
-                it[value] = ""
-            }
-        }
-        log.info("Active position cleared (position closed)")
-        telegram.sendAlert("Position closed. Strategy idle — no active position.")
-    }
-
-    fun updateTokenId(newTokenId: String) {
-        activeTokenId = newTokenId
-        transaction {
-            StrategyState.upsert {
-                it[key] = ACTIVE_TOKEN_ID_KEY
-                it[value] = newTokenId
-            }
-        }
-        log.info("Active position updated to tokenId=$newTokenId")
-        telegram.sendAlert("Strategy active: new position tokenId=$newTokenId")
-    }
-
-    fun calculateRange(currentTick: Int, fee: Int, rangePercent: Double): Pair<Int, Int> =
-        calculateNewRange(currentTick, fee, rangePercent)
-
-    override fun startScheduler() {
-        val intervalMs = config.rebalancer.pollIntervalSeconds * 1000
-        timer = fixedRateTimer("rebalancer", daemon = true, period = intervalMs) {
-            runBlocking {
-                try {
-                    execute()
-                } catch (e: Exception) {
-                    log.error("Rebalance cycle failed", e)
-                    telegram.sendAlert("Rebalancer error: ${e.message}")
-                }
-            }
-        }
-        log.info("Rebalancer scheduler started, polling every ${config.rebalancer.pollIntervalSeconds}s")
-    }
-
-    override fun stopScheduler() {
-        timer?.cancel()
-    }
-
-    override suspend fun execute() {
-        val tokenId = activeTokenId
-        if (tokenId.isBlank()) {
-            log.debug("No active position, skipping rebalance check")
-            return
-        }
-        log.debug("Checking position tokenId=$tokenId")
+    /**
+     * Run one poll cycle for the given strategy using the provided wallet phrase.
+     * - Updates time-in-range stats every tick
+     * - Triggers rebalance only when out of range
+     */
+    suspend fun execute(strategy: StrategyRecord, walletPhrase: String) {
+        val tokenId = strategy.currentTokenId
+        log.debug("Checking strategy=${strategy.id} user=${strategy.userId} tokenId=$tokenId")
 
         val position = chainClient.getPosition(tokenId)
         val poolState = chainClient.getPoolState(tokenId)
@@ -105,52 +40,88 @@ class UniswapStrategy(
         val currentTick = poolState.tick
         val inRange = currentTick >= position.tickLower && currentTick < position.tickUpper
 
+        // Record tick for time-in-range tracking
+        strategyService.recordPollTick(strategy.id, inRange)
+
         if (inRange) {
-            log.debug("Position in range (tick=$currentTick, range=[${position.tickLower}, ${position.tickUpper}])")
+            log.debug("Strategy=${strategy.id} in range (tick=$currentTick range=[${position.tickLower},${position.tickUpper}])")
             return
         }
 
-        log.info("Position OUT OF RANGE — tick=$currentTick, range=[${position.tickLower}, ${position.tickUpper}]. Triggering rebalance.")
-        telegram.sendAlert("Position out of range! tick=$currentTick range=[${position.tickLower}, ${position.tickUpper}]. Rebalancing...")
+        log.info("Strategy=${strategy.id} OUT OF RANGE — tick=$currentTick range=[${position.tickLower},${position.tickUpper}]. Rebalancing.")
+        telegram.sendAlert("[${strategy.name}] Out of range! tick=$currentTick range=[${position.tickLower},${position.tickUpper}]. Rebalancing...")
 
-        val (newTickLower, newTickUpper) = calculateNewRange(poolState.tick, position.fee, config.rebalancer.rangePercent)
-
+        val (newTickLower, newTickUpper) = calculateNewRange(currentTick, position.fee, strategy.rangePercent)
         val idempotencyKey = UUID.randomUUID().toString()
+
+        // Insert pending event
+        val eventId = transaction {
+            RebalanceEvents.insert {
+                it[strategyId] = strategy.id
+                it[RebalanceEvents.tokenId] = tokenId
+                it[RebalanceEvents.idempotencyKey] = idempotencyKey
+                it[status] = "pending"
+                it[RebalanceEvents.newTickLower] = newTickLower
+                it[RebalanceEvents.newTickUpper] = newTickUpper
+                it[triggeredAt] = Clock.System.now()
+            } get RebalanceEvents.id
+        }
+
         val result = chainClient.rebalance(
             idempotencyKey = idempotencyKey,
             tokenId = tokenId,
             newTickLower = newTickLower,
             newTickUpper = newTickUpper,
-            slippageTolerance = config.rebalancer.slippageTolerance,
+            slippageTolerance = strategy.slippageTolerance,
+            walletPrivateKey = walletPhrase,
         )
 
         if (result.success) {
-            log.info("Rebalance succeeded. New tokenId=${result.newTokenId}, txs=${result.txHashes}")
-            telegram.sendAlert("Rebalance successful! New position tokenId=${result.newTokenId}")
+            log.info("Strategy=${strategy.id} rebalance succeeded. newTokenId=${result.newTokenId}")
+            telegram.sendAlert("[${strategy.name}] Rebalance successful! New tokenId=${result.newTokenId}")
 
-            // Update tracked tokenId to the new position
-            result.newTokenId?.let { newId -> updateTokenId(newId) }
+            val fees0 = result.feesCollected?.amount0 ?: "0"
+            val fees1 = result.feesCollected?.amount1 ?: "0"
+            val gasWei = result.gasUsedWei ?: "0"
+
+            transaction {
+                RebalanceEvents.update({ RebalanceEvents.id eq eventId }) {
+                    it[status] = "success"
+                    it[newTokenId] = result.newTokenId
+                    it[txHashes] = Json.encodeToString(result.txHashes)
+                    it[feesCollectedToken0] = fees0
+                    it[feesCollectedToken1] = fees1
+                    it[gasCostWei] = gasWei
+                    it[completedAt] = Clock.System.now()
+                }
+            }
+
+            result.newTokenId?.let { newId ->
+                strategyService.updateTokenId(strategy.id, newId)
+            }
+            strategyService.recordRebalanceSuccess(strategy.id, fees0, fees1, gasWei)
         } else {
-            log.error("Rebalance failed: ${result.error}")
-            telegram.sendAlert("Rebalance FAILED: ${result.error}")
+            log.error("Strategy=${strategy.id} rebalance failed: ${result.error}")
+            telegram.sendAlert("[${strategy.name}] Rebalance FAILED: ${result.error}")
+
+            transaction {
+                RebalanceEvents.update({ RebalanceEvents.id eq eventId }) {
+                    it[status] = "failed"
+                    it[errorMessage] = result.error
+                    it[completedAt] = Clock.System.now()
+                }
+            }
         }
     }
 
-    // Calculate new tick range centered on current price with +/- rangePercent
-    // Uses the relationship: price = 1.0001^tick
+    // Calculate new tick range centered on current price ± rangePercent
     private fun calculateNewRange(currentTick: Int, fee: Int, rangePercent: Double): Pair<Int, Int> {
         val tickSpacing = feeToTickSpacing(fee)
-
-        // Convert percent to tick delta: tickDelta = log(1 + rangePercent) / log(1.0001)
         val tickDelta = (Math.log(1.0 + rangePercent) / Math.log(1.0001)).toInt()
-
         val rawLower = currentTick - tickDelta
         val rawUpper = currentTick + tickDelta
-
-        // Snap to tick spacing
         val tickLower = (rawLower / tickSpacing) * tickSpacing
         val tickUpper = (rawUpper / tickSpacing) * tickSpacing
-
         return Pair(tickLower, tickUpper)
     }
 

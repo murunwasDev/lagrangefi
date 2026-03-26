@@ -62,6 +62,16 @@ data class WalletBalancesResponse(
 )
 
 @Serializable
+data class RebalanceRequest(
+    val idempotencyKey: String,
+    val tokenId: String,
+    val newTickLower: Int,
+    val newTickUpper: Int,
+    val slippageTolerance: Double,
+    val walletPrivateKey: String,
+)
+
+@Serializable
 data class MintRequest(
     val ethAmount: String,
     val usdcAmount: String,
@@ -132,13 +142,13 @@ class ChainClient(private val baseUrl: String) {
     ): RebalanceResponse =
         http.post("$baseUrl/execute/rebalance") {
             contentType(ContentType.Application.Json)
-            setBody(mapOf(
-                "idempotencyKey" to idempotencyKey,
-                "tokenId" to tokenId,
-                "newTickLower" to newTickLower,
-                "newTickUpper" to newTickUpper,
-                "slippageTolerance" to slippageTolerance,
-                "walletPrivateKey" to walletPrivateKey,
+            setBody(RebalanceRequest(
+                idempotencyKey = idempotencyKey,
+                tokenId = tokenId,
+                newTickLower = newTickLower,
+                newTickUpper = newTickUpper,
+                slippageTolerance = slippageTolerance,
+                walletPrivateKey = walletPrivateKey,
             ))
         }.body()
 }

@@ -75,6 +75,7 @@ export async function mintPosition(req: MintRequest): Promise<MintResult> {
   const walletClient = createWalletClientForKey(req.walletPrivateKey)
   const account = walletClient.account!
   const txHashes: string[] = []
+  const receipts: Awaited<ReturnType<typeof publicClient.waitForTransactionReceipt>>[] = []
   const deadline = BigInt(Math.floor(Date.now() / 1000)) + DEADLINE_BUFFER
 
   // 1. Wrap ETH → WETH if requested
@@ -86,7 +87,8 @@ export async function mintPosition(req: MintRequest): Promise<MintResult> {
       functionName: 'deposit',
       value: parseEther(req.ethAmount),
     })
-    await publicClient.waitForTransactionReceipt({ hash: wrapTx })
+    const r = await publicClient.waitForTransactionReceipt({ hash: wrapTx })
+    receipts.push(r)
     txHashes.push(wrapTx)
   }
 
@@ -131,6 +133,7 @@ export async function mintPosition(req: MintRequest): Promise<MintResult> {
       deadline,
       walletClient,
     })
+    receipts.push(await publicClient.waitForTransactionReceipt({ hash: swapTx }))
     txHashes.push(swapTx)
   }
 
@@ -142,9 +145,9 @@ export async function mintPosition(req: MintRequest): Promise<MintResult> {
 
   // 7. Approve position manager for both tokens — sequential to avoid nonce collision
   const approveTx0 = await walletClient.writeContract({ address: TOKEN0, abi: ERC20_ABI, functionName: 'approve', args: [POSITION_MANAGER, finalBalance0] })
-  await publicClient.waitForTransactionReceipt({ hash: approveTx0 })
+  receipts.push(await publicClient.waitForTransactionReceipt({ hash: approveTx0 }))
   const approveTx1 = await walletClient.writeContract({ address: TOKEN1, abi: ERC20_ABI, functionName: 'approve', args: [POSITION_MANAGER, finalBalance1] })
-  await publicClient.waitForTransactionReceipt({ hash: approveTx1 })
+  receipts.push(await publicClient.waitForTransactionReceipt({ hash: approveTx1 }))
   txHashes.push(approveTx0, approveTx1)
 
   // 8. Mint new LP position
@@ -167,6 +170,7 @@ export async function mintPosition(req: MintRequest): Promise<MintResult> {
     }],
   })
   const mintReceipt = await publicClient.waitForTransactionReceipt({ hash: mintTx })
+  receipts.push(mintReceipt)
   txHashes.push(mintTx)
 
   // 9. Parse new tokenId from ERC721 Transfer event
@@ -176,5 +180,8 @@ export async function mintPosition(req: MintRequest): Promise<MintResult> {
   )
   const tokenId = transferLog?.topics[3] ? BigInt(transferLog.topics[3]).toString() : undefined
 
-  return { success: true, tokenId, txHashes }
+  // 10. Sum gas cost across all transactions
+  const gasUsedWei = receipts.reduce((acc, r) => acc + r.gasUsed * r.effectiveGasPrice, 0n).toString()
+
+  return { success: true, tokenId, txHashes, gasUsedWei }
 }

@@ -123,10 +123,10 @@ function totalGasWei(receipts: Array<{ gasUsed: bigint; effectiveGasPrice: bigin
   return receipts.reduce((acc, r) => acc + r.gasUsed * r.effectiveGasPrice, 0n)
 }
 
-/** Parse Collect event from receipt to extract fee amounts */
-function parseCollectFees(
+/** Parse Collect event from receipt to extract total collected amounts (fees + principal) */
+function parseTotalCollected(
   receipt: Awaited<ReturnType<typeof publicClient.waitForTransactionReceipt>>
-): FeesCollected | undefined {
+): { amount0: bigint; amount1: bigint } | undefined {
   const log = receipt.logs.find(
     (l) =>
       l.address.toLowerCase() === POSITION_MANAGER.toLowerCase() &&
@@ -134,11 +134,15 @@ function parseCollectFees(
   )
   if (!log || !log.data || log.data === '0x') return undefined
 
-  // data = abi.encode(amount0, amount1) — two uint256 values
+  // Collect event data layout (recipient is NOT indexed):
+  //   [0:32]   recipient address (padded to 32 bytes)
+  //   [32:64]  amount0Collect (uint256)
+  //   [64:96]  amount1Collect (uint256)
   const data = log.data.slice(2) // remove 0x
-  const amount0 = BigInt('0x' + data.slice(0, 64))
-  const amount1 = BigInt('0x' + data.slice(64, 128))
-  return { amount0: amount0.toString(), amount1: amount1.toString() }
+  if (data.length < 192) return undefined
+  const amount0 = BigInt('0x' + data.slice(64, 128))   // skip recipient (32 bytes = 64 hex chars)
+  const amount1 = BigInt('0x' + data.slice(128, 192))
+  return { amount0, amount1 }
 }
 
 export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult> {
@@ -162,18 +166,36 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
     return { success: false, txHashes: [], error: 'Position has no liquidity' }
   }
 
-  // 2. Remove all liquidity
+  // 2. Simulate decreaseLiquidity first to capture principal amounts (fees = total_collected - principal)
+  const decreaseParams = {
+    tokenId,
+    liquidity,
+    amount0Min: 0n,
+    amount1Min: 0n,
+    deadline,
+  }
+  let principal0 = 0n
+  let principal1 = 0n
+  try {
+    const sim = await publicClient.simulateContract({
+      address: POSITION_MANAGER,
+      abi: POSITION_MANAGER_ABI,
+      functionName: 'decreaseLiquidity',
+      account: account.address,
+      args: [decreaseParams],
+    })
+    principal0 = sim.result[0]
+    principal1 = sim.result[1]
+  } catch {
+    // If simulation fails, fees will be 0 (conservative fallback — principal unknown)
+  }
+
+  // Remove all liquidity
   const decreaseTx = await walletClient.writeContract({
     address: POSITION_MANAGER,
     abi: POSITION_MANAGER_ABI,
     functionName: 'decreaseLiquidity',
-    args: [{
-      tokenId,
-      liquidity,
-      amount0Min: 0n, // TODO: apply slippage tolerance
-      amount1Min: 0n,
-      deadline,
-    }],
+    args: [decreaseParams],
   })
   const decreaseReceipt = await publicClient.waitForTransactionReceipt({ hash: decreaseTx })
   txHashes.push(decreaseTx)
@@ -200,8 +222,14 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
   txHashes.push(collectTx)
   receipts.push(collectReceipt)
 
-  // Parse fees from Collect event
-  const feesCollected = parseCollectFees(collectReceipt)
+  // Parse total collected from Collect event, then subtract principal to get LP fees only
+  const totalCollected = parseTotalCollected(collectReceipt)
+  const feesCollected: FeesCollected | undefined = totalCollected
+    ? {
+        amount0: (totalCollected.amount0 > principal0 ? totalCollected.amount0 - principal0 : 0n).toString(),
+        amount1: (totalCollected.amount1 > principal1 ? totalCollected.amount1 - principal1 : 0n).toString(),
+      }
+    : undefined
 
   // 4. Extract position token addresses and fee
   const token0 = position[2] as `0x${string}`

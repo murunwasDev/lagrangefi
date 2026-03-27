@@ -43,12 +43,17 @@ class StrategyScheduler(
                         token0 = row[Strategies.token0],
                         token1 = row[Strategies.token1],
                         fee = row[Strategies.fee],
+                        token0Decimals = row[Strategies.token0Decimals],
+                        token1Decimals = row[Strategies.token1Decimals],
                         rangePercent = row[Strategies.rangePercent],
                         slippageTolerance = row[Strategies.slippageTolerance],
                         pollIntervalSeconds = row[Strategies.pollIntervalSeconds],
                         status = row[Strategies.status],
                         createdAt = row[Strategies.createdAt].toString(),
                         stoppedAt = row[Strategies.stoppedAt]?.toString(),
+                        initialToken0Amount = row[Strategies.initialToken0Amount],
+                        initialToken1Amount = row[Strategies.initialToken1Amount],
+                        initialValueUsd = row[Strategies.initialValueUsd],
                     )
                 }
         }
@@ -94,18 +99,23 @@ class StrategyScheduler(
                         token0 = row[Strategies.token0],
                         token1 = row[Strategies.token1],
                         fee = row[Strategies.fee],
+                        token0Decimals = row[Strategies.token0Decimals],
+                        token1Decimals = row[Strategies.token1Decimals],
                         rangePercent = row[Strategies.rangePercent],
                         slippageTolerance = row[Strategies.slippageTolerance],
                         pollIntervalSeconds = row[Strategies.pollIntervalSeconds],
                         status = row[Strategies.status],
                         createdAt = row[Strategies.createdAt].toString(),
                         stoppedAt = row[Strategies.stoppedAt]?.toString(),
+                        initialToken0Amount = row[Strategies.initialToken0Amount],
+                        initialToken1Amount = row[Strategies.initialToken1Amount],
+                        initialValueUsd = row[Strategies.initialValueUsd],
                     )
                 }
         }
 
         if (strategy == null) {
-            // Strategy was paused/stopped externally — cancel the timer
+            // Strategy was stopped externally — cancel the timer
             stop(strategyId)
             return
         }

@@ -36,12 +36,17 @@ const MOCK_STRATEGIES = [
     token0: '0x82af49447d8a07e3bd95bd0d56f35241523fbab1', // WETH (lower address = token0)
     token1: '0xaf88d065e77c8cc2239327c5edb3a432268e5831', // USDC
     fee: 500,
+    token0Decimals: 18,
+    token1Decimals: 6,
     rangePercent: 10,
     slippageTolerance: 0.5,
     pollIntervalSeconds: 60,
     status: 'active',
     createdAt: new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString(),
     stoppedAt: null,
+    initialToken0Amount: '250000000000000000',  // 0.25 WETH
+    initialToken1Amount: '500000000',           // 500 USDC
+    initialValueUsd: 1355.88,                   // 0.25 * 2823.50 + 500
   },
 ]
 
@@ -51,6 +56,11 @@ const MOCK_STATS = {
   feesCollectedToken0: '4320000000000000', // WETH (18 decimals) ~0.00432 WETH
   feesCollectedToken1: '12340000',          // USDC (6 decimals)  ~12.34 USDC
   gasCostWei: '8200000000000000',
+  gasCostUsd: 27.83, // ~0.0082 ETH * ~$3400
+  feesCollectedUsd: 29.18,
+  closeEthPriceUsd: null,
+  closeFeesUsd: null,
+  closeGasUsd: null,
   totalPollTicks: 1200,
   inRangeTicks: 980,
   timeInRangePct: 81.67,
@@ -68,6 +78,7 @@ const MOCK_REBALANCES = [
     // ~0.25 WETH + 710 USDC before, ~0.248 WETH + 705 USDC after (some lost to gas/slippage)
     positionToken0Start: '250000000000000000', positionToken1Start: '710000000',
     positionToken0End:   '248000000000000000', positionToken1End:   '705000000',
+    ethPriceUsd: '3425.50',
     errorMessage: null,
     triggeredAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
     completedAt: new Date(Date.now() - 2 * 3600 * 1000 + 30000).toISOString(),
@@ -80,6 +91,7 @@ const MOCK_REBALANCES = [
     gasCostWei: '2900000000000000',
     positionToken0Start: '252000000000000000', positionToken1Start: '715000000',
     positionToken0End:   '250000000000000000', positionToken1End:   '710000000',
+    ethPriceUsd: '3380.00',
     errorMessage: null,
     triggeredAt: new Date(Date.now() - 26 * 3600 * 1000).toISOString(),
     completedAt: new Date(Date.now() - 26 * 3600 * 1000 + 45000).toISOString(),
@@ -91,6 +103,7 @@ const MOCK_REBALANCES = [
     gasCostWei: null,
     positionToken0Start: null, positionToken1Start: null,
     positionToken0End: null, positionToken1End: null,
+    ethPriceUsd: null,
     errorMessage: 'slippage exceeded',
     triggeredAt: new Date(Date.now() - 50 * 3600 * 1000).toISOString(),
     completedAt: new Date(Date.now() - 50 * 3600 * 1000 + 5000).toISOString(),

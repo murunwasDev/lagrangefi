@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import {
   fetchStrategies, startStrategy, createStrategy,
-  pauseStrategy, resumeStrategy, stopStrategy,
+  stopStrategy,
   fetchStrategyStats, fetchStrategyRebalances,
   fetchPosition, fetchPoolState, fetchWalletBalances,
 } from '../api'
@@ -28,9 +28,7 @@ function tokenLabel(addr: string) {
 }
 function feeLabel(fee: number) { return (fee / 10000).toFixed(2) + '%' }
 function shortHash(h: string) { return h.slice(0, 8) + '…' + h.slice(-6) }
-function tokenDecimals(addr: string) {
-  return (TOKEN_LABELS[addr.toLowerCase()] ?? '').includes('USDC') ? 6 : 18
-}
+
 function tickToPrice(tick: number, d0: number, d1: number) {
   return Math.pow(1.0001, tick) * Math.pow(10, d0 - d1)
 }
@@ -39,21 +37,59 @@ function formatUsd(n: number) {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
 }
 function weiToEth(wei: string) { return (Number(BigInt(wei)) / 1e18).toFixed(6) }
-function formatRaw(amount: string, decimals: number) {
+const SUBSCRIPT_DIGITS = '₀₁₂₃₄₅₆₇₈₉'
+function toSub(n: number) {
+  return n.toString().split('').map(d => SUBSCRIPT_DIGITS[+d]).join('')
+}
+function formatRaw(amount: string, decimals: number, sigFigs = 4): { compact: string; full: string } {
   const n = BigInt(amount), d = 10n ** BigInt(decimals)
-  return `${n / d}.${(n % d).toString().padStart(decimals, '0').slice(0, 4)}`
+  const whole = n / d
+  const frac = (n % d).toString().padStart(decimals, '0')
+  const leadingZeros = frac.match(/^0*/)?.[0].length ?? 0
+  const significant = frac.slice(leadingZeros, leadingZeros + sigFigs).replace(/0+$/, '')
+  const full = `${whole}.${frac.replace(/0+$/, '') || '0'}`
+  let compact: string
+  if (leadingZeros > 4 && significant) {
+    compact = `${whole}.0${toSub(leadingZeros)}${significant}`
+  } else {
+    const trimmed = frac.slice(0, leadingZeros + sigFigs).replace(/0+$/, '')
+    compact = trimmed ? `${whole}.${trimmed}` : `${whole}`
+  }
+  return { compact, full }
+}
+
+function Tooltip({ tip, children }: { tip: string; children: React.ReactNode }) {
+  return (
+    <span className="relative group/tip inline-block cursor-help">
+      <span className="underline decoration-dotted decoration-gray-400 underline-offset-2">{children}</span>
+      <span className="pointer-events-none absolute bottom-full left-0 mb-1.5 hidden group-hover/tip:block
+                       bg-gray-900 text-white text-xs font-mono rounded-lg px-2.5 py-1.5 whitespace-nowrap z-50 shadow-lg">
+        {tip}
+      </span>
+    </span>
+  )
+}
+
+function RawAmount({ amount, decimals, label, usd }: { amount: string; decimals: number; label: string; usd?: number }) {
+  const { compact, full } = formatRaw(amount, decimals)
+  const usdStr = usd != null ? ` (${formatUsd(usd)})` : ''
+  const tip = usd != null ? `${full} ${label} (${formatUsd(usd)})` : `${full} ${label}`
+  return <Tooltip tip={tip}>{compact} {label}{usdStr}</Tooltip>
 }
 function daysRunning(createdAt: string) {
   return Math.floor((Date.now() - new Date(createdAt).getTime()) / 86_400_000)
 }
 
-function computeNetFees(stats: StrategyStats, ethPrice: number, _token0: string, token1: string) {
+function computeNetFees(stats: StrategyStats, ethPrice: number, _token0: string, token1: string, dec0: number, dec1: number) {
   if (!tokenLabel(token1).includes('USDC')) return null
-  const feesToken0Eth = Number(BigInt(stats.feesCollectedToken0)) / 1e18
-  const feesToken1Usd = Number(BigInt(stats.feesCollectedToken1)) / 1e6
-  const gasEth = Number(BigInt(stats.gasCostWei)) / 1e18
-  const feesUsd = feesToken1Usd + feesToken0Eth * ethPrice
-  const gasUsd = gasEth * ethPrice
+  // Prefer historically-accurate accumulated USD value; fall back to current price
+  const feesUsd = stats.feesCollectedUsd > 0
+    ? stats.feesCollectedUsd
+    : (Number(BigInt(stats.feesCollectedToken0)) / Math.pow(10, dec0)) * ethPrice +
+      (Number(BigInt(stats.feesCollectedToken1)) / Math.pow(10, dec1))
+  const gasUsd = stats.gasCostUsd > 0
+    ? stats.gasCostUsd
+    : (Number(BigInt(stats.gasCostWei)) / 1e18) * ethPrice
   return { feesUsd, gasUsd, netUsd: feesUsd - gasUsd }
 }
 
@@ -61,7 +97,6 @@ function computeNetFees(stats: StrategyStats, ethPrice: number, _token0: string,
 
 const STATUS_STYLES: Record<string, string> = {
   active:  'bg-emerald-50 text-emerald-700 border border-emerald-200',
-  paused:  'bg-amber-50 text-amber-700 border border-amber-200',
   stopped: 'bg-gray-100 text-gray-500 border border-gray-200',
 }
 
@@ -76,31 +111,13 @@ function StatusBadge({ status }: { status: string }) {
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex justify-between items-center py-1.5 border-b border-gray-100/60 last:border-0">
-      <span className="text-xs text-gray-400">{label}</span>
-      <span className="text-xs font-medium text-gray-700 font-mono">{value}</span>
+    <div className="flex justify-between items-center gap-4 py-1.5 px-2.5 rounded-lg hover:bg-white/40 transition-colors">
+      <span className="text-xs font-medium text-gray-400 shrink-0">{label}</span>
+      <span className="text-xs font-semibold text-gray-800 font-mono text-right">{value}</span>
     </div>
   )
 }
 
-function MetricCard({ label, value, sub, accent }: {
-  label: string; value: React.ReactNode; sub?: React.ReactNode
-  accent?: 'green' | 'red' | 'blue' | 'amber'
-}) {
-  const color =
-    accent === 'green' ? 'text-emerald-600' :
-    accent === 'red'   ? 'text-red-500' :
-    accent === 'blue'  ? 'text-blue-600' :
-    accent === 'amber' ? 'text-amber-500' :
-    'text-gray-900'
-  return (
-    <div className="bg-white/40 border border-white/60 rounded-xl p-4">
-      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">{label}</p>
-      <p className={`text-2xl font-bold tracking-tight ${color}`}>{value}</p>
-      {sub && <p className="text-xs text-gray-500 mt-1">{sub}</p>}
-    </div>
-  )
-}
 
 function PriceRangeBar({ tick, tickLower, tickUpper, decimals0, decimals1 }: {
   tick: number; tickLower: number; tickUpper: number; decimals0: number; decimals1: number
@@ -138,8 +155,22 @@ function PriceRangeBar({ tick, tickLower, tickUpper, decimals0, decimals1 }: {
   )
 }
 
-function RebalanceTable({ events, token0, token1 }: { events: RebalanceEvent[]; token0: string; token1: string }) {
-  const dec0 = tokenDecimals(token0), dec1 = tokenDecimals(token1)
+function rebalanceFeesUsd(r: RebalanceEvent, dec0: number, dec1: number, label0: string): number | null {
+  if (!r.ethPriceUsd || !r.feesCollectedToken0 || !r.feesCollectedToken1) return null
+  const ethPrice = parseFloat(r.ethPriceUsd)
+  const fee0 = Number(BigInt(r.feesCollectedToken0)) / Math.pow(10, dec0)
+  const fee1 = Number(BigInt(r.feesCollectedToken1)) / Math.pow(10, dec1)
+  return label0.includes('WETH') ? fee0 * ethPrice + fee1 : fee1 * ethPrice + fee0
+}
+
+function positionUsd(token0raw: string, token1raw: string, dec0: number, dec1: number, label0: string, ethPrice: number): number {
+  const t0 = Number(BigInt(token0raw)) / Math.pow(10, dec0)
+  const t1 = Number(BigInt(token1raw)) / Math.pow(10, dec1)
+  return label0.includes('WETH') ? t0 * ethPrice + t1 : t1 * ethPrice + t0
+}
+
+function RebalanceTable({ events, token0, token1, dec0, dec1 }: { events: RebalanceEvent[]; token0: string; token1: string; dec0: number; dec1: number }) {
+  const label0 = tokenLabel(token0), label1 = tokenLabel(token1)
   if (events.length === 0)
     return <p className="text-gray-400 text-sm text-center py-6">No rebalances yet</p>
   return (
@@ -147,49 +178,94 @@ function RebalanceTable({ events, token0, token1 }: { events: RebalanceEvent[]; 
       <table className="w-full text-xs">
         <thead>
           <tr className="text-gray-400 border-b border-gray-100">
-            {['Time', 'Status', 'New Range', 'Fees', 'Gas (ETH)', 'Tx'].map(h => (
-              <th key={h} className="text-left pb-2.5 font-semibold">{h}</th>
+            {['Time', 'Status', 'Position NFT', 'New Range', 'LP Fees', 'LP Value (start→end)', 'Gas', 'Tx'].map(h => (
+              <th key={h} className="text-left pb-2.5 font-semibold pr-4">{h}</th>
             ))}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">
-          {events.map(r => (
-            <tr key={r.id} className={`transition-colors ${r.status === 'failed' ? 'bg-red-50/40' : 'hover:bg-white/30'}`}>
-              <td className="py-2 text-gray-500 font-mono whitespace-nowrap">
-                {new Date(r.triggeredAt).toLocaleString()}
-              </td>
-              <td className="py-2">
-                <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${
-                  r.status === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
-                  r.status === 'failed'  ? 'bg-red-50 text-red-700 border border-red-200' :
-                  'bg-amber-50 text-amber-700 border border-amber-200'
-                }`}>{r.status}</span>
-              </td>
-              <td className="py-2 text-gray-600 font-mono">
-                {r.newTickLower != null
-                  ? `$${formatPrice(tickToPrice(r.newTickLower, dec0, dec1))} → $${formatPrice(tickToPrice(r.newTickUpper!, dec0, dec1))}`
-                  : <span className="text-red-400">{r.errorMessage ?? '—'}</span>}
-              </td>
-              <td className="py-2 text-gray-500 font-mono">
-                {r.feesCollectedToken0 != null
-                  ? `${formatRaw(r.feesCollectedToken0, dec0)} ${tokenLabel(token0)}`
-                  : '—'}
-              </td>
-              <td className="py-2 text-gray-500 font-mono">
-                {r.gasCostWei != null ? weiToEth(r.gasCostWei) : '—'}
-              </td>
-              <td className="py-2">
-                {r.txHashes
-                  ? JSON.parse(r.txHashes).slice(0, 1).map((h: string) => (
-                    <a key={h} href={`https://arbiscan.io/tx/${h}`} target="_blank" rel="noopener noreferrer"
-                      className="text-blue-600 hover:text-blue-700 font-mono underline underline-offset-2">
-                      {shortHash(h)}
-                    </a>
-                  ))
-                  : <span className="text-gray-400">—</span>}
-              </td>
-            </tr>
-          ))}
+          {events.map(r => {
+            const ethPrice = r.ethPriceUsd ? parseFloat(r.ethPriceUsd) : 0
+            const feesUsd = rebalanceFeesUsd(r, dec0, dec1, label0)
+            const hasLp = r.positionToken0Start && r.positionToken1Start && r.positionToken0End && r.positionToken1End && ethPrice > 0
+            return (
+              <tr key={r.id} className={`transition-colors ${r.status === 'failed' ? 'bg-red-50/40' : 'hover:bg-white/30'}`}>
+                <td className="py-2.5 text-gray-500 font-mono whitespace-nowrap pr-4">
+                  {new Date(r.triggeredAt).toLocaleString()}
+                </td>
+                <td className="py-2.5 pr-4">
+                  <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${
+                    r.status === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                    r.status === 'failed'  ? 'bg-red-50 text-red-700 border border-red-200' :
+                    'bg-amber-50 text-amber-700 border border-amber-200'
+                  }`}>{r.status}</span>
+                </td>
+                <td className="py-2.5 text-gray-500 font-mono pr-4">
+                  <div className="space-y-0.5">
+                    <div>#{r.tokenId}</div>
+                    {r.newTokenId && r.newTokenId !== r.tokenId && (
+                      <div className="text-gray-400">↳ #{r.newTokenId}</div>
+                    )}
+                  </div>
+                </td>
+                <td className="py-2.5 text-gray-600 font-mono pr-4">
+                  {r.newTickLower != null
+                    ? `$${formatPrice(tickToPrice(r.newTickLower, dec0, dec1))} → $${formatPrice(tickToPrice(r.newTickUpper!, dec0, dec1))}`
+                    : <span className="text-red-400">{r.errorMessage ?? '—'}</span>}
+                </td>
+                <td className="py-2.5 text-gray-600 font-mono pr-4">
+                  {r.feesCollectedToken0 != null ? (
+                    <div className="space-y-0.5">
+                      <div><RawAmount amount={r.feesCollectedToken0} decimals={dec0} label={label0} /></div>
+                      <div><RawAmount amount={r.feesCollectedToken1 ?? '0'} decimals={dec1} label={label1} /></div>
+                      {feesUsd != null && (
+                        <div className="text-emerald-600 font-semibold">{formatUsd(feesUsd)}</div>
+                      )}
+                    </div>
+                  ) : '—'}
+                </td>
+                <td className="py-2.5 text-gray-600 font-mono pr-4">
+                  {hasLp ? (() => {
+                    const { compact: t0s } = formatRaw(r.positionToken0Start!, dec0)
+                    const { compact: t1s } = formatRaw(r.positionToken1Start!, dec1)
+                    const { compact: t0e } = formatRaw(r.positionToken0End!, dec0)
+                    const { compact: t1e } = formatRaw(r.positionToken1End!, dec1)
+                    const tipStart = `${t0s} ${label0} + ${t1s} ${label1}`
+                    const tipEnd   = `${t0e} ${label0} + ${t1e} ${label1}`
+                    return (
+                      <div className="space-y-0.5">
+                        <Tooltip tip={tipStart}><span className="text-gray-400">{formatUsd(positionUsd(r.positionToken0Start!, r.positionToken1Start!, dec0, dec1, label0, ethPrice))}</span></Tooltip>
+                        <div className="text-gray-500">↓</div>
+                        <Tooltip tip={tipEnd}><span>{formatUsd(positionUsd(r.positionToken0End!, r.positionToken1End!, dec0, dec1, label0, ethPrice))}</span></Tooltip>
+                      </div>
+                    )
+                  })() : '—'}
+                </td>
+                <td className="py-2.5 text-gray-500 font-mono pr-4">
+                  {r.gasCostWei != null ? (
+                    <Tooltip tip={`${r.gasCostWei} wei`}>
+                      <span>{weiToEth(r.gasCostWei)} ETH</span>
+                      {ethPrice > 0 && (
+                        <span className="block text-red-400">{formatUsd(Number(BigInt(r.gasCostWei)) / 1e18 * ethPrice)}</span>
+                      )}
+                    </Tooltip>
+                  ) : '—'}
+                </td>
+                <td className="py-2.5">
+                  {r.txHashes
+                    ? JSON.parse(r.txHashes).slice(0, 1).map((h: string) => (
+                      <Tooltip key={h} tip={h}>
+                        <a href={`https://arbiscan.io/tx/${h}`} target="_blank" rel="noopener noreferrer"
+                          className="text-blue-600 hover:text-blue-700">
+                          {shortHash(h)}
+                        </a>
+                      </Tooltip>
+                    ))
+                    : <span className="text-gray-400">—</span>}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -198,7 +274,7 @@ function RebalanceTable({ events, token0, token1 }: { events: RebalanceEvent[]; 
 
 function OnboardingState({ hasWallet }: { hasWallet: boolean }) {
   return (
-    <div className="bg-white/60 backdrop-blur-sm rounded-2xl border border-white/80 shadow-sm flex flex-col items-center justify-center py-20 text-center">
+    <div className="bg-white/60 backdrop-blur-xl rounded-2xl border border-white/70 shadow-lg shadow-black/5 flex flex-col items-center justify-center py-20 text-center">
       <div className="w-16 h-16 bg-white/60 backdrop-blur-sm rounded-2xl flex items-center justify-center mb-5 border border-white/80 shadow-sm">
         <span className="text-2xl font-bold text-gray-400">Δ</span>
       </div>
@@ -333,11 +409,6 @@ export default function StrategyPage() {
     setTabMap(prev => ({ ...prev, [id]: tab }))
   }
 
-  async function handlePause(id: number)  { await pauseStrategy(id); load() }
-  async function handleResume(id: number) {
-    try { await resumeStrategy(id); load() }
-    catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to resume') }
-  }
   async function handleStop(id: number) {
     await stopStrategy(id)
     setConfirmStopId(null); setExpandedId(null); load()
@@ -392,10 +463,13 @@ export default function StrategyPage() {
           <button
             onClick={openCreate}
             disabled={hasActive}
-            title={hasActive ? 'Stop or pause your active strategy first' : undefined}
-            className="bg-gray-900 hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+            title={hasActive ? 'Stop your active strategy before creating a new one' : undefined}
+            className="inline-flex items-center gap-2 bg-gray-900 hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm hover:shadow transition-all"
           >
-            + New strategy
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            New strategy
           </button>
         </div>
       </div>
@@ -414,7 +488,7 @@ export default function StrategyPage() {
 
       {/* ── Create form ─────────────────────────────────────────────────────── */}
       {showCreate && !hasActive && (
-        <div className="bg-white/60 backdrop-blur-sm rounded-2xl border border-white/80 shadow-sm p-6 mb-6">
+        <div className="bg-white/60 backdrop-blur-xl rounded-2xl border border-white/70 shadow-lg shadow-black/5 p-6 mb-6">
           <div className="flex items-center justify-between mb-5">
             <h2 className="text-base font-semibold text-gray-900">New strategy</h2>
             <button onClick={closeCreate} className="text-gray-400 hover:text-gray-600 transition-colors">
@@ -434,7 +508,7 @@ export default function StrategyPage() {
                 </div>
               </div>
               {successData.txHashes.length > 0 && (
-                <div className="bg-white/40 border border-white/60 rounded-xl p-4">
+                <div className="bg-white/50 backdrop-blur-sm border border-white/70 rounded-2xl p-4 shadow-sm">
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Transactions</p>
                   <div className="space-y-1.5">
                     {successData.txHashes.map((h, i) => (
@@ -548,7 +622,7 @@ export default function StrategyPage() {
                   Advanced settings
                 </button>
                 {showAdvanced && (
-                  <div className="mt-3 space-y-4 bg-white/40 border border-white/60 rounded-xl p-4">
+                  <div className="mt-3 space-y-4 bg-white/50 backdrop-blur-sm border border-white/70 rounded-2xl p-4 shadow-sm">
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="block text-xs font-medium text-gray-600 mb-1.5">Slippage (%)</label>
@@ -586,7 +660,7 @@ export default function StrategyPage() {
                 )}
               </div>
 
-              <div className="bg-white/40 border border-white/60 rounded-xl p-4 space-y-2">
+              <div className="bg-white/50 backdrop-blur-sm border border-white/70 rounded-2xl p-4 shadow-sm space-y-2">
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Summary</p>
                 {createMode === 'mint' ? (
                   <>
@@ -621,11 +695,19 @@ export default function StrategyPage() {
 
               <div className="flex gap-2">
                 <button type="submit" disabled={formState === 'submitting'}
-                  className="bg-gray-900 hover:bg-gray-800 disabled:opacity-60 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors">
-                  {formState === 'submitting' ? 'Starting…' : createMode === 'mint' ? 'Start strategy' : 'Register strategy'}
+                  className="inline-flex items-center gap-2 bg-gray-900 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-5 py-2.5 rounded-xl shadow-sm hover:shadow transition-all">
+                  {formState === 'submitting' ? (
+                    <>
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                      </svg>
+                      Starting…
+                    </>
+                  ) : createMode === 'mint' ? 'Start strategy' : 'Register strategy'}
                 </button>
                 <button type="button" onClick={closeCreate}
-                  className="text-gray-600 hover:text-gray-900 text-sm font-medium px-4 py-2.5 rounded-xl border border-gray-200 hover:border-gray-300 transition-colors">
+                  className="text-gray-500 hover:text-gray-900 text-sm font-medium px-4 py-2.5 rounded-xl border border-gray-200 hover:border-gray-300 bg-white/60 hover:bg-white/80 transition-all">
                   Cancel
                 </button>
               </div>
@@ -644,22 +726,30 @@ export default function StrategyPage() {
             const pool     = poolStates[s.id]
             const st       = stats[s.id]
             const ethPrice = pool ? parseFloat(pool.price) : 0
-            const fees     = st ? computeNetFees(st, ethPrice, s.token0, s.token1) : null
+            const fees     = st ? computeNetFees(st, ethPrice, s.token0, s.token1, s.token0Decimals ?? 18, s.token1Decimals ?? 6) : null
             const inRange  = pool && pos ? pool.tick >= pos.tickLower && pool.tick < pos.tickUpper : null
             const tab      = tabMap[s.id] ?? 'overview'
 
             return (
-              <div key={s.id} className="bg-white/60 backdrop-blur-sm rounded-2xl border border-white/80 shadow-sm overflow-hidden">
+              <div key={s.id} className={`relative backdrop-blur-xl rounded-2xl border shadow-lg transition-shadow hover:shadow-xl ${
+                s.status === 'active'
+                  ? 'bg-white/65 border-white/70 shadow-emerald-100/50'
+                  : 'bg-white/50 border-white/60'
+              }`}>
+                {/* Active strategy top accent bar */}
+                {s.status === 'active' && (
+                  <div className="absolute top-0 left-0 right-0 h-0.5 rounded-t-2xl bg-gradient-to-r from-emerald-400 via-teal-300 to-emerald-400" />
+                )}
                 {/* Card header */}
                 <div
-                  className="flex items-center justify-between px-5 py-4 cursor-pointer hover:bg-white/30 transition-colors"
+                  className="flex items-center justify-between px-5 py-4 cursor-pointer hover:bg-white/20 transition-colors"
                   onClick={() => expandStrategy(s.id)}
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <StatusBadge status={s.status} />
                     <span className="font-semibold text-gray-900 truncate">{s.name}</span>
                     <span className="text-xs text-gray-400 font-mono shrink-0 hidden sm:inline">
-                      {tokenLabel(s.token0)}/{tokenLabel(s.token1)} · {feeLabel(s.fee)} · #{s.currentTokenId}
+                      {tokenLabel(s.token0)}/{tokenLabel(s.token1)} · {feeLabel(s.fee)}
                     </span>
                     {s.status !== 'stopped' && (
                       <span className="text-xs text-gray-400 shrink-0 hidden md:inline">
@@ -678,40 +768,38 @@ export default function StrategyPage() {
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0 ml-2" onClick={e => e.stopPropagation()}>
-                    {s.status === 'active' && (
-                      <button onClick={() => handlePause(s.id)}
-                        className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100 px-3 py-1.5 rounded-lg transition-colors">
-                        Pause
-                      </button>
-                    )}
-                    {s.status === 'paused' && (
-                      <button onClick={() => handleResume(s.id)}
-                        className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 px-3 py-1.5 rounded-lg transition-colors">
-                        Resume
-                      </button>
-                    )}
+                  <div className="flex items-center gap-1.5 shrink-0 ml-2" onClick={e => e.stopPropagation()}>
                     {s.status !== 'stopped' && confirmStopId !== s.id && (
                       <button onClick={() => setConfirmStopId(s.id)}
-                        className="text-xs font-semibold text-red-600 bg-red-50 border border-red-200 hover:bg-red-100 px-3 py-1.5 rounded-lg transition-colors">
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-500/80
+                                   bg-red-500/8 backdrop-blur-sm border border-red-300/40
+                                   hover:text-red-600 hover:bg-red-500/15 hover:border-red-400/60
+                                   px-3 py-1.5 rounded-lg transition-all hover:shadow-sm hover:shadow-red-100">
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                          <rect x="4" y="4" width="16" height="16" rx="2"/>
+                        </svg>
                         Stop
                       </button>
                     )}
                     {confirmStopId === s.id && (
-                      <div className="flex items-center gap-1.5 bg-red-50 border border-red-200 rounded-lg px-3 py-1.5">
-                        <span className="text-xs text-red-700 font-medium">Stop permanently?</span>
+                      <div className="flex items-center gap-2 bg-white/80 backdrop-blur-md border border-red-100 rounded-xl px-3 py-1.5 shadow-lg shadow-red-500/10">
+                        <span className="text-xs text-gray-500 font-medium whitespace-nowrap">Stop permanently?</span>
                         <button onClick={() => handleStop(s.id)}
-                          className="text-xs font-bold text-white bg-red-600 hover:bg-red-700 px-2 py-0.5 rounded transition-colors">
-                          Yes
+                          className="inline-flex items-center gap-1 text-xs font-bold text-white
+                                     bg-gradient-to-r from-red-500 to-rose-600
+                                     hover:from-red-600 hover:to-rose-700
+                                     px-3 py-1 rounded-lg shadow-sm shadow-red-500/30 transition-all hover:shadow-red-500/50 hover:shadow-md">
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+                          Confirm
                         </button>
                         <button onClick={() => setConfirmStopId(null)}
-                          className="text-xs font-medium text-red-600 hover:text-red-800 px-1">
+                          className="text-xs font-medium text-gray-400 hover:text-gray-600 transition-colors">
                           Cancel
                         </button>
                       </div>
                     )}
                     <svg
-                      className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${expandedId === s.id ? 'rotate-180' : ''}`}
+                      className={`w-4 h-4 text-gray-300 transition-transform duration-200 ${expandedId === s.id ? 'rotate-180' : ''}`}
                       fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <polyline points="6 9 12 15 18 9" />
                     </svg>
@@ -720,13 +808,15 @@ export default function StrategyPage() {
 
                 {/* Expanded */}
                 {expandedId === s.id && (
-                  <div className="border-t border-gray-100/60 px-5 py-4">
+                  <div className="border-t border-white/50 px-5 py-5 bg-white/10">
                     {/* Tabs */}
-                    <div className="flex gap-1 bg-gray-200/50 rounded-xl p-1 w-fit mb-5">
+                    <div className="flex gap-1 bg-gray-100/80 border border-gray-200/60 rounded-xl p-1 w-fit mb-5">
                       {(['overview', 'history'] as const).map(t => (
                         <button key={t} onClick={() => setTab(s.id, t)}
-                          className={`px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${
-                            tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                          className={`px-4 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all ${
+                            tab === t
+                              ? 'bg-white text-gray-900 shadow-sm border border-gray-200/80'
+                              : 'text-gray-400 hover:text-gray-600'
                           }`}>
                           {t}
                         </button>
@@ -736,102 +826,289 @@ export default function StrategyPage() {
                     {/* Overview tab */}
                     {tab === 'overview' && (
                       <div className="space-y-4">
-                        {/* Metric cards — shown once stats loaded */}
+
+                        {/* ── Summary strip ── */}
                         {st && (
-                          <div className="grid grid-cols-3 gap-3">
-                            <MetricCard
-                              label="ETH Price"
-                              value={pool ? `$${Math.round(ethPrice).toLocaleString()}` : '—'}
-                              sub="USDC per WETH"
-                              accent="blue"
-                            />
-                            <MetricCard
-                              label="Net Fees"
-                              value={fees ? formatUsd(fees.netUsd) : '—'}
-                              sub={fees ? `${formatUsd(fees.feesUsd)} earned · ${formatUsd(fees.gasUsd)} gas` : undefined}
-                              accent={fees ? (fees.netUsd >= 0 ? 'green' : 'red') : undefined}
-                            />
-                            <MetricCard
-                              label="Time in Range"
-                              value={`${st.timeInRangePct.toFixed(1)}%`}
-                              sub={`${daysRunning(s.createdAt)}d · ${st.totalRebalances} rebalances`}
-                              accent={st.timeInRangePct >= 70 ? 'green' : st.timeInRangePct >= 40 ? 'amber' : 'red'}
-                            />
+                          <div className="bg-white/50 backdrop-blur-md border border-white/70 rounded-2xl overflow-hidden shadow-sm">
+                            <div className="grid grid-cols-2 sm:grid-cols-4">
+                              {/* Status */}
+                              <div className="relative px-5 py-4 border-b sm:border-b-0 sm:border-r border-white/50">
+                                <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-slate-400/70 to-blue-300/50" />
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2.5">Status</p>
+                                <div className="flex items-center gap-2">
+                                  {s.status === 'active' && inRange !== null && (
+                                    <div className="relative shrink-0 w-2.5 h-2.5">
+                                      {inRange && <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-60" />}
+                                      <span className={`relative block w-2.5 h-2.5 rounded-full ${inRange ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                                    </div>
+                                  )}
+                                  <p className={`text-sm font-bold leading-tight ${
+                                    s.status !== 'active' ? 'text-gray-500' :
+                                    inRange === true ? 'text-emerald-700' : inRange === false ? 'text-red-600' : 'text-gray-400'
+                                  }`}>
+                                    {s.status !== 'active' ? s.status : inRange === null ? 'Loading…' : inRange ? 'In Range' : 'Out of Range'}
+                                  </p>
+                                </div>
+                                {s.status === 'active' && (
+                                  <p className="text-[10px] text-gray-400 mt-1.5">{daysRunning(s.createdAt)}d running</p>
+                                )}
+                              </div>
+
+                              {/* Net return */}
+                              <div className="relative px-5 py-4 border-b sm:border-b-0 sm:border-r border-white/50">
+                                <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-emerald-400/70 to-teal-300/50" />
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2.5">Net return</p>
+                                <p className={`text-xl font-bold tracking-tight ${fees ? (fees.netUsd >= 0 ? 'text-emerald-600' : 'text-red-500') : 'text-gray-400'}`}>
+                                  {fees ? (fees.netUsd >= 0 ? '+' : '') + formatUsd(fees.netUsd) : '—'}
+                                </p>
+                                {fees && s.initialValueUsd && (
+                                  <p className="text-[10px] text-gray-400 mt-1.5">
+                                    {((fees.netUsd / s.initialValueUsd) * 100).toFixed(2)}% of deposit
+                                  </p>
+                                )}
+                              </div>
+
+                              {/* Time in range */}
+                              <div className="relative px-5 py-4 border-r border-white/50">
+                                <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-violet-400/70 to-purple-300/50" />
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2.5">In range</p>
+                                <p className={`text-xl font-bold tracking-tight ${st.timeInRangePct >= 70 ? 'text-emerald-600' : st.timeInRangePct >= 40 ? 'text-amber-500' : 'text-red-500'}`}>
+                                  {st.timeInRangePct.toFixed(1)}%
+                                </p>
+                                <div className="mt-2 h-1 bg-white/70 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${st.timeInRangePct >= 70 ? 'bg-gradient-to-r from-emerald-400 to-teal-400' : st.timeInRangePct >= 40 ? 'bg-amber-400' : 'bg-red-400'}`}
+                                    style={{ width: `${st.timeInRangePct}%` }} />
+                                </div>
+                              </div>
+
+                              {/* Rebalances */}
+                              <div className="relative px-5 py-4">
+                                <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-sky-400/70 to-blue-300/50" />
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2.5">Rebalances</p>
+                                <p className="text-xl font-bold tracking-tight text-gray-900">{st.totalRebalances}</p>
+                                <p className="text-[10px] text-gray-400 mt-1.5">
+                                  {st.avgRebalanceIntervalHours != null && st.totalRebalances >= 2
+                                    ? `avg ${st.avgRebalanceIntervalHours.toFixed(1)}h apart`
+                                    : 'since start'}
+                                </p>
+                              </div>
+                            </div>
                           </div>
                         )}
 
-                        {/* Position + Config */}
+                        {/* ── Main grid ── */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {/* Position */}
-                          <div className="bg-white/40 border border-white/60 rounded-xl p-4">
-                            <div className="flex items-center justify-between mb-3">
-                              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Position</h3>
-                              {s.status === 'active' && inRange !== null && (
-                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${
-                                  inRange
-                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                    : 'bg-red-50 text-red-700 border border-red-200'
-                                }`}>
-                                  <span className={`w-1.5 h-1.5 rounded-full ${inRange ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
-                                  {inRange ? 'In Range' : 'Out of Range'}
-                                </span>
+
+                          {/* Position card */}
+                          <div className="bg-white/50 backdrop-blur-md border border-white/70 rounded-2xl shadow-sm">
+                            {/* Colored header */}
+                            <div className="bg-gradient-to-r from-blue-500/10 via-sky-400/6 to-transparent border-b border-blue-100/50 px-5 pt-4 pb-3 rounded-t-2xl">
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-0.5 h-4 rounded-full bg-gradient-to-b from-blue-400 to-sky-400" />
+                                  <h3 className="text-[10px] font-bold uppercase tracking-widest text-blue-500/90">Position</h3>
+                                </div>
+                                {pos && (
+                                  <div className="flex items-center gap-1.5 bg-white/60 border border-white/80 rounded-lg px-2.5 py-1">
+                                    <span className="text-[10px] text-gray-400">NFT</span>
+                                    <span className="text-xs font-mono font-bold text-gray-700">#{pos.tokenId}</span>
+                                    <span className={`text-[10px] font-bold ${BigInt(pos.liquidity) > 0n ? 'text-emerald-500' : 'text-red-400'}`}>
+                                      {BigInt(pos.liquidity) > 0n ? '●' : '○'}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                              {s.status === 'active' && pool && pos && (
+                                <>
+                                  <p className="text-3xl font-bold text-gray-900 tracking-tight leading-none mt-2">
+                                    ${Number(pool.price).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                                  </p>
+                                  <p className="text-xs text-gray-400 mt-1">{tokenLabel(s.token0)}/{tokenLabel(s.token1)} · {feeLabel(pos.fee)}</p>
+                                </>
                               )}
                             </div>
-                            {s.status !== 'active' ? (
-                              <p className="text-xs text-gray-400 py-3">
-                                Live position data is only available for active strategies.
-                              </p>
-                            ) : pos && pool ? (
-                              <>
-                                <InfoRow label="Token ID"   value={`#${pos.tokenId}`} />
-                                <InfoRow label="Pool price" value={`$${Number(pool.price).toLocaleString('en-US', { maximumFractionDigits: 2 })}`} />
-                                <InfoRow label="Liquidity"  value={BigInt(pos.liquidity) > 0n ? 'Active' : 'Empty'} />
-                                <InfoRow label="Fee tier"   value={feeLabel(pos.fee)} />
+                            <div className="px-5 py-4"
+                              style={{ backgroundImage: 'radial-gradient(circle, rgba(99,102,241,0.07) 1px, transparent 1px)', backgroundSize: '18px 18px' }}>
+                              {s.status !== 'active' ? (
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-3 bg-white/70 border border-white/80 rounded-xl px-3 py-2.5">
+                                    <span className="text-xs font-medium text-gray-400">NFT</span>
+                                    <span className="text-xs font-mono font-bold text-gray-700">#{s.currentTokenId}</span>
+                                    <span className="ml-auto text-xs text-gray-400">{tokenLabel(s.token0)}/{tokenLabel(s.token1)} · {feeLabel(s.fee)}</span>
+                                  </div>
+                                  <p className="text-xs text-gray-400 px-1">Live data available for active strategies only.</p>
+                                </div>
+                              ) : pos && pool ? (
                                 <PriceRangeBar
                                   tick={pool.tick} tickLower={pos.tickLower} tickUpper={pos.tickUpper}
                                   decimals0={pool.decimals0} decimals1={pool.decimals1}
                                 />
-                              </>
-                            ) : (
-                              <div className="flex items-center gap-2 text-gray-400 text-sm py-4">
-                                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                                </svg>
-                                Loading…
-                              </div>
-                            )}
+                              ) : (
+                                <div className="flex items-center gap-2 text-gray-400 text-sm py-8 justify-center">
+                                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                                  </svg>
+                                  Loading…
+                                </div>
+                              )}
+                            </div>
                           </div>
 
-                          {/* Config */}
-                          <div className="bg-white/40 border border-white/60 rounded-xl p-4">
-                            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Config</h3>
-                            <InfoRow label="Range"         value={`± ${(s.rangePercent * 100).toFixed(1)}%`} />
-                            <InfoRow label="Slippage"      value={`${(s.slippageTolerance * 100).toFixed(2)}%`} />
-                            <InfoRow label="Poll interval" value={`${s.pollIntervalSeconds}s`} />
-                            <InfoRow label="Started"       value={new Date(s.createdAt).toLocaleDateString()} />
-                            <InfoRow label="Running"       value={`${daysRunning(s.createdAt)} days`} />
-                            {s.stoppedAt && <InfoRow label="Stopped" value={new Date(s.stoppedAt).toLocaleDateString()} />}
-                            {st && st.totalRebalances >= 3 && st.avgRebalanceIntervalHours != null && (
-                              <InfoRow label="Avg rebalance" value={`${st.avgRebalanceIntervalHours.toFixed(1)}h`} />
-                            )}
-                            {st && (
-                              <>
-                                <InfoRow label={`Fees ${tokenLabel(s.token0)}`} value={formatRaw(st.feesCollectedToken0, tokenDecimals(s.token0))} />
-                                <InfoRow label={`Fees ${tokenLabel(s.token1)}`} value={formatRaw(st.feesCollectedToken1, tokenDecimals(s.token1))} />
-                                <InfoRow label="Gas spent" value={`${weiToEth(st.gasCostWei)} ETH`} />
-                              </>
-                            )}
-                          </div>
+                          {/* Right column */}
+                          <div className="flex flex-col gap-4">
+
+                            {/* Performance card */}
+                            <div className="bg-white/50 backdrop-blur-md border border-white/70 rounded-2xl shadow-sm">
+                              <div className="bg-gradient-to-r from-emerald-500/10 via-teal-400/6 to-transparent border-b border-emerald-100/50 px-5 pt-4 pb-3 rounded-t-2xl">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-0.5 h-4 rounded-full bg-gradient-to-b from-emerald-400 to-teal-400" />
+                                  <h3 className="text-[10px] font-bold uppercase tracking-widest text-emerald-600/90">Performance</h3>
+                                </div>
+                              </div>
+                              <div className="px-5 py-4">
+                                {st ? (
+                                  <div className="space-y-1.5">
+                                    {/* Net return hero — leads the card */}
+                                    {fees ? (
+                                      <div className={`flex items-end justify-between px-3 py-3 rounded-xl border mb-2 ${
+                                        fees.netUsd >= 0 ? 'bg-emerald-50/70 border-emerald-200/60' : 'bg-red-50/70 border-red-200/60'
+                                      }`}>
+                                        <div>
+                                          <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-0.5">Net return</p>
+                                          <p className={`text-2xl font-bold tracking-tight font-mono ${fees.netUsd >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                                            {(fees.netUsd >= 0 ? '+' : '') + formatUsd(fees.netUsd)}
+                                          </p>
+                                        </div>
+                                        {s.initialValueUsd && (
+                                          <p className={`text-sm font-semibold pb-0.5 ${fees.netUsd >= 0 ? 'text-emerald-500' : 'text-red-400'}`}>
+                                            {((fees.netUsd / s.initialValueUsd) * 100).toFixed(2)}%
+                                          </p>
+                                        )}
+                                      </div>
+                                    ) : s.initialValueUsd != null ? (
+                                      <div className="flex justify-between items-center px-2.5 py-1.5 rounded-lg mb-1">
+                                        <span className="text-xs font-medium text-gray-400">Deposited</span>
+                                        <span className="text-xs font-semibold text-gray-600 font-mono">{formatUsd(s.initialValueUsd)}</span>
+                                      </div>
+                                    ) : null}
+                                    {/* Fees row */}
+                                    <div className="flex justify-between items-start px-2.5 py-1.5 rounded-lg bg-emerald-50/50 border border-emerald-100/60">
+                                      <span className="text-xs font-medium text-emerald-700 flex items-center gap-1.5 mt-0.5">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                        Fees earned
+                                      </span>
+                                      <div className="text-right">
+                                        <p className="text-xs font-bold text-emerald-600 font-mono">
+                                          {fees ? '+' + formatUsd(fees.feesUsd) : '—'}
+                                        </p>
+                                        {st.feesCollectedToken0 !== '0' && (
+                                          <p className="text-[11px] text-gray-400 font-mono mt-0.5">
+                                            <RawAmount amount={st.feesCollectedToken0} decimals={s.token0Decimals ?? 18} label={tokenLabel(s.token0)} />
+                                            {' + '}
+                                            <RawAmount amount={st.feesCollectedToken1} decimals={s.token1Decimals ?? 6} label={tokenLabel(s.token1)} />
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {/* Gas row */}
+                                    <div className="flex justify-between items-start px-2.5 py-1.5 rounded-lg bg-red-50/50 border border-red-100/60">
+                                      <span className="text-xs font-medium text-red-600 flex items-center gap-1.5 mt-0.5">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                                        Gas spent
+                                      </span>
+                                      <div className="text-right">
+                                        <p className="text-xs font-bold text-red-500 font-mono">
+                                          <Tooltip tip={`${st.gasCostWei} wei`}>
+                                            {fees ? '−' + formatUsd(fees.gasUsd) : weiToEth(st.gasCostWei) + ' ETH'}
+                                          </Tooltip>
+                                        </p>
+                                        {fees && (
+                                          <p className="text-[11px] text-gray-400 font-mono mt-0.5">{weiToEth(st.gasCostWei)} ETH</p>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {/* Fees/gas ratio bar */}
+                                    {fees && fees.feesUsd > 0 && (
+                                      <div className="h-1 rounded-full overflow-hidden flex mx-2.5 mt-1 bg-gray-100">
+                                        <div className="h-full bg-gradient-to-r from-emerald-400 to-emerald-500"
+                                          style={{ width: `${Math.min((fees.feesUsd / (fees.feesUsd + fees.gasUsd)) * 100, 100)}%` }} />
+                                        <div className="h-full bg-gradient-to-r from-red-400 to-red-500"
+                                          style={{ width: `${Math.min((fees.gasUsd / (fees.feesUsd + fees.gasUsd)) * 100, 100)}%` }} />
+                                      </div>
+                                    )}
+                                    {/* Stopped snapshot */}
+                                    {s.status === 'stopped' && st.closeEthPriceUsd != null && (
+                                      <div className="pt-3 border-t border-gray-100/80 space-y-1">
+                                        <p className="text-[11px] text-gray-400 font-medium px-2.5">At close · ETH = {formatUsd(st.closeEthPriceUsd)}</p>
+                                        {st.closeFeesUsd != null && (
+                                          <div className="flex justify-between px-2.5 text-xs">
+                                            <span className="text-gray-400">Fees</span>
+                                            <span className="font-mono font-semibold text-emerald-600">{formatUsd(st.closeFeesUsd)}</span>
+                                          </div>
+                                        )}
+                                        {st.closeGasUsd != null && (
+                                          <div className="flex justify-between px-2.5 text-xs">
+                                            <span className="text-gray-400">Gas</span>
+                                            <span className="font-mono font-semibold text-red-500">{formatUsd(st.closeGasUsd)}</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-gray-400 py-2 px-2.5">Loading…</p>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Config card */}
+                            <div className="bg-white/50 backdrop-blur-md border border-white/70 rounded-2xl shadow-sm">
+                              <div className="bg-gradient-to-r from-violet-500/10 via-purple-400/6 to-transparent border-b border-violet-100/50 px-5 pt-4 pb-3 rounded-t-2xl">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-0.5 h-4 rounded-full bg-gradient-to-b from-violet-400 to-purple-400" />
+                                  <h3 className="text-[10px] font-bold uppercase tracking-widest text-violet-500/90">Config</h3>
+                                </div>
+                              </div>
+                              <div className="px-5 py-4">
+                                <div className="flex flex-wrap gap-2 mb-3">
+                                  {[
+                                    `±${(s.rangePercent * 100).toFixed(0)}% range`,
+                                    `${(s.slippageTolerance * 100).toFixed(2)}% slip`,
+                                    `${s.pollIntervalSeconds}s poll`,
+                                    feeLabel(s.fee) + ' fee',
+                                  ].map(tag => (
+                                    <span key={tag} className="inline-flex items-center px-2.5 py-1 rounded-lg bg-white/70 border border-white/90 text-xs font-semibold text-gray-600 shadow-sm">
+                                      {tag}
+                                    </span>
+                                  ))}
+                                </div>
+                                <div className="space-y-0.5">
+                                  <InfoRow label="Started" value={new Date(s.createdAt).toLocaleDateString()} />
+                                  {s.status !== 'stopped'
+                                    ? <InfoRow label="Running" value={`${daysRunning(s.createdAt)} days`} />
+                                    : s.stoppedAt ? <InfoRow label="Stopped" value={new Date(s.stoppedAt).toLocaleDateString()} /> : null
+                                  }
+                                  {s.initialToken0Amount && (
+                                    <InfoRow label={`Deposit ${tokenLabel(s.token0)}`} value={<RawAmount amount={s.initialToken0Amount} decimals={s.token0Decimals ?? 18} label={tokenLabel(s.token0)} />} />
+                                  )}
+                                  {s.initialToken1Amount && (
+                                    <InfoRow label={`Deposit ${tokenLabel(s.token1)}`} value={<RawAmount amount={s.initialToken1Amount} decimals={s.token1Decimals ?? 6} label={tokenLabel(s.token1)} />} />
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                          </div>{/* end right column */}
                         </div>
                       </div>
                     )}
 
                     {/* History tab */}
                     {tab === 'history' && (
-                      <div className="bg-white/40 border border-white/60 rounded-xl p-4">
+                      <div className="bg-white/50 backdrop-blur-sm border border-white/70 rounded-2xl p-4 shadow-sm">
                         {rebalances[s.id] ? (
-                          <RebalanceTable events={rebalances[s.id]} token0={s.token0} token1={s.token1} />
+                          <RebalanceTable events={rebalances[s.id]} token0={s.token0} token1={s.token1} dec0={s.token0Decimals ?? 18} dec1={s.token1Decimals ?? 6} />
                         ) : (
                           <p className="text-gray-400 text-sm text-center py-4">Loading…</p>
                         )}

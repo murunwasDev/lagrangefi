@@ -97,6 +97,7 @@ class UniswapStrategy(
                         it[positionToken1Start] = result.positionToken1Start
                         it[positionToken0End] = result.positionToken0End
                         it[positionToken1End] = result.positionToken1End
+                        it[ethPriceUsd] = poolState.price
                         it[completedAt] = Clock.System.now()
                     }
                 }
@@ -104,7 +105,7 @@ class UniswapStrategy(
                 result.newTokenId?.let { newId ->
                     strategyService.updateTokenId(strategy.id, newId)
                 }
-                strategyService.recordRebalanceSuccess(strategy.id, fees0, fees1, gasWei)
+                strategyService.recordRebalanceSuccess(strategy.id, fees0, fees1, gasWei, poolState.price.toDoubleOrNull() ?: 0.0)
             } else {
                 log.error("Strategy=${strategy.id} rebalance failed: ${result.error}")
                 telegram.sendAlert("[${strategy.name}] Rebalance FAILED: ${result.error}")

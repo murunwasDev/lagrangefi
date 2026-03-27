@@ -4,7 +4,8 @@
 
 body {
   margin: 0;
-  background-color: #d4d4d8;
+  background: linear-gradient(145deg, #dde8f0 0%, #e8e4f0 40%, #d8e8e4 100%);
+  min-height: 100vh;
   color: #111827;
   font-family: 'Inter', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;

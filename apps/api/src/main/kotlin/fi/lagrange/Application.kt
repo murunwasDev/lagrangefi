@@ -37,6 +37,6 @@ fun main() {
         JwtConfig.configureKtor(this)
         configureSerialization()
         configureStatusPages()
-        configureRouting(chainClient, userService, walletService, strategyService, scheduler)
+        configureRouting(chainClient, userService, walletService, strategyService, scheduler, telegramNotifier)
     }.start(wait = true)
 }

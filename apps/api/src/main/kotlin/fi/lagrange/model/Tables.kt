@@ -29,13 +29,19 @@ object Strategies : Table("strategies") {
     val token0 = varchar("token0", 42)
     val token1 = varchar("token1", 42)
     val fee = integer("fee")
+    val token0Decimals = integer("token0_decimals").default(18)
+    val token1Decimals = integer("token1_decimals").default(6)
     val rangePercent = double("range_percent").default(0.05)
     val slippageTolerance = double("slippage_tolerance").default(0.005)
     val pollIntervalSeconds = long("poll_interval_seconds").default(60)
-    /** active | paused | stopped */
+    /** active | stopped */
     val status = varchar("status", 16).default("active")
     val createdAt = timestamp("created_at")
     val stoppedAt = timestamp("stopped_at").nullable()
+    /** Initial deposit amounts (raw units) and USD value at strategy creation time */
+    val initialToken0Amount = varchar("initial_token0_amount", 78).nullable()
+    val initialToken1Amount = varchar("initial_token1_amount", 78).nullable()
+    val initialValueUsd = double("initial_value_usd").nullable()
     override val primaryKey = PrimaryKey(id)
 }
 
@@ -47,6 +53,14 @@ object StrategyStats : Table("strategy_stats") {
     val feesCollectedToken1 = varchar("fees_collected_token1", 78).default("0")
     /** Total gas cost across all rebalances, in wei, stored as decimal string */
     val gasCostWei = varchar("gas_cost_wei", 78).default("0")
+    /** Total gas cost in USD, accumulated at the ETH price at time of each rebalance */
+    val gasCostUsd = double("gas_cost_usd").default(0.0)
+    /** Total fees collected in USD, accumulated at historical ETH price per rebalance */
+    val feesCollectedUsd = double("fees_collected_usd").default(0.0)
+    /** Snapshot of ETH price, fees, and gas at the time the strategy was stopped */
+    val closeEthPriceUsd = double("close_eth_price_usd").nullable()
+    val closeFeesUsd = double("close_fees_usd").nullable()
+    val closeGasUsd = double("close_gas_usd").nullable()
     val totalPollTicks = integer("total_poll_ticks").default(0)
     val inRangeTicks = integer("in_range_ticks").default(0)
     val timeInRangePct = double("time_in_range_pct").default(0.0)
@@ -72,6 +86,8 @@ object RebalanceEvents : Table("rebalance_events") {
     val positionToken1Start = varchar("position_token1_start", 78).nullable()
     val positionToken0End = varchar("position_token0_end", 78).nullable()
     val positionToken1End = varchar("position_token1_end", 78).nullable()
+    /** ETH price in USD (USDC per WETH) at the time of the rebalance, for tax reporting */
+    val ethPriceUsd = varchar("eth_price_usd", 32).nullable()
     val errorMessage = text("error_message").nullable()
     val triggeredAt = timestamp("triggered_at")
     val completedAt = timestamp("completed_at").nullable()

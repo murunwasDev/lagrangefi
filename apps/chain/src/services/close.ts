@@ -93,7 +93,7 @@ const MAX_UINT128 = 2n ** 128n - 1n
 const DEADLINE_BUFFER = 300n // 5 minutes
 
 export async function closePosition(req: CloseRequest): Promise<CloseResult> {
-  const walletClient = createWalletClientForKey()
+  const walletClient = createWalletClientForKey(req.walletPrivateKey)
   const tokenId = BigInt(req.tokenId)
   const deadline = BigInt(Math.floor(Date.now() / 1000)) + DEADLINE_BUFFER
   const account = walletClient.account!

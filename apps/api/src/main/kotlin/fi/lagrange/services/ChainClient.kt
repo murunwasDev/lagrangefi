@@ -92,6 +92,7 @@ data class MintResponse(
     val tokenId: String? = null,
     val txHashes: List<String>,
     val error: String? = null,
+    val gasUsedWei: String? = null,
 )
 
 class ChainClient(private val baseUrl: String) {
@@ -126,12 +127,13 @@ class ChainClient(private val baseUrl: String) {
             setBody(req)
         }.body()
 
-    suspend fun close(idempotencyKey: String, tokenId: String): CloseResponse =
+    suspend fun close(idempotencyKey: String, tokenId: String, walletPrivateKey: String): CloseResponse =
         http.post("$baseUrl/execute/close") {
             contentType(ContentType.Application.Json)
             setBody(mapOf(
                 "idempotencyKey" to idempotencyKey,
                 "tokenId" to tokenId,
+                "walletPrivateKey" to walletPrivateKey,
             ))
         }.body()
 

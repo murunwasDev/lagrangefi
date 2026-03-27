@@ -67,11 +67,15 @@ export interface MintResult {
   tokenId?: string
   txHashes: string[]
   error?: string
+  /** Total gas cost across all mint transactions, in wei */
+  gasUsedWei?: string
 }
 
 export interface CloseRequest {
   idempotencyKey: string
   tokenId: string
+  /** Per-request wallet: private key (0x...) or BIP39 mnemonic phrase */
+  walletPrivateKey?: string
 }
 
 export interface CloseResult {

@@ -151,6 +151,7 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
   const deadline = BigInt(Math.floor(Date.now() / 1000)) + DEADLINE_BUFFER
   const account = walletClient.account!
   const txHashes: string[] = []
+  const txSteps: string[] = []
   const receipts: Array<{ gasUsed: bigint; effectiveGasPrice: bigint }> = []
 
   // 1. Fetch current position
@@ -199,6 +200,7 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
     })
     const decreaseReceipt = await publicClient.waitForTransactionReceipt({ hash: decreaseTx })
     txHashes.push(decreaseTx)
+    txSteps.push('Remove Liquidity')
     receipts.push(decreaseReceipt)
     if (decreaseReceipt.status === 'reverted') {
       throw new Error(`decreaseLiquidity reverted (tx: ${decreaseTx})`)
@@ -229,6 +231,7 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
     })
     const collectReceipt = await publicClient.waitForTransactionReceipt({ hash: collectTx })
     txHashes.push(collectTx)
+    txSteps.push('Collect Fees')
     receipts.push(collectReceipt)
 
     // Parse total collected from Collect event, then subtract principal to get LP fees only
@@ -307,6 +310,7 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
     })
     const swapReceipt = await publicClient.waitForTransactionReceipt({ hash: swapTx })
     txHashes.push(swapTx)
+    txSteps.push('Swap')
     receipts.push(swapReceipt)
   }
 
@@ -322,6 +326,7 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
   const approveTx1 = await walletClient.writeContract({ address: token1, abi: ERC20_ABI, functionName: 'approve', args: [POSITION_MANAGER, finalBalance1] })
   const approveReceipt1 = await publicClient.waitForTransactionReceipt({ hash: approveTx1 })
   txHashes.push(approveTx0, approveTx1)
+  txSteps.push('Approve WETH', 'Approve USDC')
   receipts.push(approveReceipt0, approveReceipt1)
 
   // 9. Mint new position at new range
@@ -345,7 +350,12 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
   })
   const mintReceipt = await publicClient.waitForTransactionReceipt({ hash: mintTx })
   txHashes.push(mintTx)
+  txSteps.push('Mint Position')
   receipts.push(mintReceipt)
+
+  if (mintReceipt.status === 'reverted') {
+    throw new Error(`mint reverted (tx: ${mintTx})`)
+  }
 
   // Parse new tokenId from Transfer event (ERC721 topic[3] = tokenId)
   const transferLog = mintReceipt.logs.find(
@@ -367,15 +377,16 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
   let positionToken1End: string | undefined
   if (mintLog?.data && mintLog.data !== '0x') {
     const data = mintLog.data.slice(2)
-    // IncreaseLiquidity(tokenId, liquidity, amount0, amount1) — liquidity in topics[2], amounts in data
-    positionToken0End = BigInt('0x' + data.slice(0, 64)).toString()
-    positionToken1End = BigInt('0x' + data.slice(64, 128)).toString()
+    // IncreaseLiquidity data layout: [liquidity(32 bytes)][amount0(32 bytes)][amount1(32 bytes)]
+    // tokenId is indexed (in topics[1]), so data starts with liquidity
+    positionToken0End = BigInt('0x' + data.slice(64, 128)).toString()   // amount0 (skip liquidity)
+    positionToken1End = BigInt('0x' + data.slice(128, 192)).toString()  // amount1
   }
 
   const gasUsedWei = totalGasWei(receipts).toString()
 
   const isRecovery = liquidity === 0n
-  return { success: true, txHashes, newTokenId, feesCollected, gasUsedWei, positionToken0Start, positionToken1Start, positionToken0End, positionToken1End, isRecovery }
+  return { success: true, txHashes, txSteps, newTokenId, feesCollected, gasUsedWei, positionToken0Start, positionToken1Start, positionToken0End, positionToken1End, isRecovery }
 
   } catch (err) {
     // Recovery: collect tokens back to wallet so they are not stranded in the position manager

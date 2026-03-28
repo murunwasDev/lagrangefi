@@ -12,6 +12,9 @@ export interface Position {
   /** Uncollected LP fees accrued in the position (raw token units) */
   tokensOwed0?: string
   tokensOwed1?: string
+  /** Actual LP principal amounts in the position (raw token units, not fees) */
+  amount0?: string
+  amount1?: string
 }
 
 export interface PoolState {
@@ -40,6 +43,8 @@ export interface FeesCollected {
 export interface RebalanceResult {
   success: boolean
   txHashes: string[]
+  /** Labels for each txHash entry (1:1 mapping) */
+  txSteps?: string[]
   newTokenId?: string
   error?: string
   /** Fees collected during the collect step (from on-chain Collect event) */
@@ -86,6 +91,12 @@ export interface CloseRequest {
 export interface CloseResult {
   success: boolean
   txHashes: string[]
+  /** Labels for each txHash entry (1:1 mapping) */
+  txSteps?: string[]
+  /** Total token0 collected at close (principal + fees, raw units) */
+  token0Amount?: string
+  /** Total token1 collected at close (principal + fees, raw units) */
+  token1Amount?: string
   error?: string
 }
 

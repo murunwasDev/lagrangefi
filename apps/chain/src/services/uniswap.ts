@@ -93,6 +93,44 @@ const FACTORY_ABI = [
 
 const FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984' as const
 
+/**
+ * Compute the token0/token1 amounts held in a Uniswap v3 LP position from its
+ * liquidity, tick range, and current pool price. Returns raw token units.
+ */
+function getPositionAmounts(
+  sqrtPriceX96: bigint,
+  tickLower: number,
+  tickUpper: number,
+  currentTick: number,
+  liquidity: bigint,
+): { amount0: string; amount1: string } {
+  if (liquidity === 0n) return { amount0: '0', amount1: '0' }
+
+  const sqrtP = Number(sqrtPriceX96) / 2 ** 96
+  const sqrtA = Math.pow(1.0001, tickLower / 2)
+  const sqrtB = Math.pow(1.0001, tickUpper / 2)
+  const L = Number(liquidity)
+
+  let amount0: number
+  let amount1: number
+
+  if (currentTick < tickLower) {
+    amount0 = L * (1 / sqrtA - 1 / sqrtB)
+    amount1 = 0
+  } else if (currentTick >= tickUpper) {
+    amount0 = 0
+    amount1 = L * (sqrtB - sqrtA)
+  } else {
+    amount0 = L * (1 / sqrtP - 1 / sqrtB)
+    amount1 = L * (sqrtP - sqrtA)
+  }
+
+  return {
+    amount0: BigInt(Math.round(Math.max(0, amount0))).toString(),
+    amount1: BigInt(Math.round(Math.max(0, amount1))).toString(),
+  }
+}
+
 export async function getPosition(tokenId: bigint): Promise<Position> {
   const [result, owner] = await Promise.all([
     publicClient.readContract({
@@ -109,36 +147,70 @@ export async function getPosition(tokenId: bigint): Promise<Position> {
     }),
   ])
 
+  const token0 = result[2] as `0x${string}`
+  const token1 = result[3] as `0x${string}`
+  const fee = result[4]
+  const tickLower = result[5]
+  const tickUpper = result[6]
+  const liquidity = result[7]
+
   // Simulate collect() to get actual unclaimed fees including pending accrued fees.
-  // positions() only returns already-checkpointed tokensOwed; pending fees since the
-  // last checkpoint are not included until a collect/modify triggers a snapshot.
+  // Also fetch pool state to compute LP principal amounts from liquidity.
   let tokensOwed0 = result[10]
   let tokensOwed1 = result[11]
+  let amount0: string | undefined
+  let amount1: string | undefined
+
+  const [poolAddress] = await Promise.all([
+    publicClient.readContract({
+      address: FACTORY,
+      abi: FACTORY_ABI,
+      functionName: 'getPool',
+      args: [token0, token1, fee],
+    }),
+    (async () => {
+      try {
+        const { result: collected } = await publicClient.simulateContract({
+          address: POSITION_MANAGER,
+          abi: POSITION_MANAGER_ABI,
+          functionName: 'collect',
+          args: [{ tokenId, recipient: owner, amount0Max: MAX_UINT128, amount1Max: MAX_UINT128 }],
+          account: owner,
+        })
+        tokensOwed0 = collected[0]
+        tokensOwed1 = collected[1]
+      } catch {
+        // fall back to checkpointed values if simulation fails
+      }
+    })(),
+  ])
+
   try {
-    const { result: collected } = await publicClient.simulateContract({
-      address: POSITION_MANAGER,
-      abi: POSITION_MANAGER_ABI,
-      functionName: 'collect',
-      args: [{ tokenId, recipient: owner, amount0Max: MAX_UINT128, amount1Max: MAX_UINT128 }],
-      account: owner,
+    const slot0 = await publicClient.readContract({
+      address: poolAddress,
+      abi: POOL_ABI,
+      functionName: 'slot0',
     })
-    tokensOwed0 = collected[0]
-    tokensOwed1 = collected[1]
+    const computed = getPositionAmounts(slot0[0], tickLower, tickUpper, slot0[1], liquidity)
+    amount0 = computed.amount0
+    amount1 = computed.amount1
   } catch {
-    // fall back to checkpointed values if simulation fails
+    // non-fatal: amounts remain undefined, UI falls back to last rebalance positionToken0End
   }
 
   return {
     tokenId: tokenId.toString(),
     owner,
-    token0: result[2],
-    token1: result[3],
-    fee: result[4],
-    tickLower: result[5],
-    tickUpper: result[6],
-    liquidity: result[7].toString(),
+    token0,
+    token1,
+    fee,
+    tickLower,
+    tickUpper,
+    liquidity: liquidity.toString(),
     tokensOwed0: tokensOwed0.toString(),
     tokensOwed1: tokensOwed1.toString(),
+    amount0,
+    amount1,
   }
 }
 

@@ -29,6 +29,8 @@ data class StrategyRecord(
     val initialToken0Amount: String?,
     val initialToken1Amount: String?,
     val initialValueUsd: Double?,
+    val openEthPriceUsd: Double?,
+    val openTxHashes: String?,
 )
 
 @Serializable
@@ -43,6 +45,10 @@ data class StrategyStatsDto(
     val closeEthPriceUsd: Double?,
     val closeFeesUsd: Double?,
     val closeGasUsd: Double?,
+    val closeToken0Amount: String?,
+    val closeToken1Amount: String?,
+    val closeValueUsd: Double?,
+    val closeTxHashes: String?,
     val totalPollTicks: Int,
     val inRangeTicks: Int,
     val timeInRangePct: Double,
@@ -69,6 +75,8 @@ class StrategyService {
         initialToken1Amount: String? = null,
         initialValueUsd: Double? = null,
         initialGasWei: String? = null,
+        openEthPriceUsd: Double? = null,
+        openTxHashes: String? = null,
     ): StrategyRecord = transaction {
         val activeCount = Strategies.selectAll()
             .where { (Strategies.userId eq userId) and (Strategies.status eq "active") }
@@ -94,6 +102,8 @@ class StrategyService {
             it[Strategies.initialToken0Amount] = initialToken0Amount
             it[Strategies.initialToken1Amount] = initialToken1Amount
             it[Strategies.initialValueUsd] = initialValueUsd
+            it[Strategies.openEthPriceUsd] = openEthPriceUsd
+            it[Strategies.openTxHashes] = openTxHashes
         } get Strategies.id
 
         // Create empty stats row
@@ -204,14 +214,25 @@ class StrategyService {
         }
     }
 
-    /** Snapshot fees, gas, and ETH price at the moment a strategy is stopped */
-    fun recordClose(strategyId: Int, closeEthPriceUsd: Double) = transaction {
+    /** Snapshot fees, gas, ETH price, and withdrawn amounts at the moment a strategy is stopped */
+    fun recordClose(
+        strategyId: Int,
+        closeEthPriceUsd: Double,
+        closeToken0Amount: String? = null,
+        closeToken1Amount: String? = null,
+        closeValueUsd: Double? = null,
+        closeTxHashes: String? = null,
+    ) = transaction {
         val stats = StrategyStats.selectAll().where { StrategyStats.strategyId eq strategyId }.firstOrNull()
             ?: return@transaction
         StrategyStats.update({ StrategyStats.strategyId eq strategyId }) {
             it[StrategyStats.closeEthPriceUsd] = closeEthPriceUsd
             it[StrategyStats.closeFeesUsd] = stats[StrategyStats.feesCollectedUsd]
             it[StrategyStats.closeGasUsd] = stats[StrategyStats.gasCostUsd]
+            it[StrategyStats.closeToken0Amount] = closeToken0Amount
+            it[StrategyStats.closeToken1Amount] = closeToken1Amount
+            it[StrategyStats.closeValueUsd] = closeValueUsd
+            it[StrategyStats.closeTxHashes] = closeTxHashes
         }
     }
 
@@ -244,6 +265,10 @@ class StrategyService {
             closeEthPriceUsd = stats[StrategyStats.closeEthPriceUsd],
             closeFeesUsd = stats[StrategyStats.closeFeesUsd],
             closeGasUsd = stats[StrategyStats.closeGasUsd],
+            closeToken0Amount = stats[StrategyStats.closeToken0Amount],
+            closeToken1Amount = stats[StrategyStats.closeToken1Amount],
+            closeValueUsd = stats[StrategyStats.closeValueUsd],
+            closeTxHashes = stats[StrategyStats.closeTxHashes],
             totalPollTicks = stats[StrategyStats.totalPollTicks],
             inRangeTicks = stats[StrategyStats.inRangeTicks],
             timeInRangePct = stats[StrategyStats.timeInRangePct],
@@ -272,6 +297,7 @@ class StrategyService {
                     newTickUpper = row[RebalanceEvents.newTickUpper],
                     newTokenId = row[RebalanceEvents.newTokenId],
                     txHashes = row[RebalanceEvents.txHashes],
+                    txSteps = row[RebalanceEvents.txSteps],
                     feesCollectedToken0 = row[RebalanceEvents.feesCollectedToken0],
                     feesCollectedToken1 = row[RebalanceEvents.feesCollectedToken1],
                     gasCostWei = row[RebalanceEvents.gasCostWei],
@@ -306,6 +332,8 @@ class StrategyService {
         initialToken0Amount = row[Strategies.initialToken0Amount],
         initialToken1Amount = row[Strategies.initialToken1Amount],
         initialValueUsd = row[Strategies.initialValueUsd],
+        openEthPriceUsd = row[Strategies.openEthPriceUsd],
+        openTxHashes = row[Strategies.openTxHashes],
     )
 }
 
@@ -319,6 +347,7 @@ data class RebalanceEventDtoKt(
     val newTickUpper: Int?,
     val newTokenId: String?,
     val txHashes: String?,
+    val txSteps: String?,
     val feesCollectedToken0: String?,
     val feesCollectedToken1: String?,
     val gasCostWei: String?,

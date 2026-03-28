@@ -22,6 +22,8 @@ data class PositionResponse(
     val liquidity: String,
     val tokensOwed0: String? = null,
     val tokensOwed1: String? = null,
+    val amount0: String? = null,
+    val amount1: String? = null,
 )
 
 @Serializable
@@ -43,6 +45,7 @@ data class FeesCollectedResponse(
 data class RebalanceResponse(
     val success: Boolean,
     val txHashes: List<String>,
+    val txSteps: List<String>? = null,
     val newTokenId: String? = null,
     val error: String? = null,
     val feesCollected: FeesCollectedResponse? = null,
@@ -58,6 +61,9 @@ data class RebalanceResponse(
 data class CloseResponse(
     val success: Boolean,
     val txHashes: List<String>,
+    val txSteps: List<String>? = null,
+    val token0Amount: String? = null,
+    val token1Amount: String? = null,
     val error: String? = null,
 )
 

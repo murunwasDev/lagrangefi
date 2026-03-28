@@ -54,6 +54,8 @@ class StrategyScheduler(
                         initialToken0Amount = row[Strategies.initialToken0Amount],
                         initialToken1Amount = row[Strategies.initialToken1Amount],
                         initialValueUsd = row[Strategies.initialValueUsd],
+                        openEthPriceUsd = row[Strategies.openEthPriceUsd],
+                        openTxHashes = row[Strategies.openTxHashes],
                     )
                 }
         }
@@ -110,6 +112,8 @@ class StrategyScheduler(
                         initialToken0Amount = row[Strategies.initialToken0Amount],
                         initialToken1Amount = row[Strategies.initialToken1Amount],
                         initialValueUsd = row[Strategies.initialValueUsd],
+                        openEthPriceUsd = row[Strategies.openEthPriceUsd],
+                        openTxHashes = row[Strategies.openTxHashes],
                     )
                 }
         }

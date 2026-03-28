@@ -15,6 +15,8 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 @Serializable
 data class CreateStrategyRequestDto(
@@ -182,6 +184,8 @@ fun Application.configureRouting(
                             initialToken1Amount = initialToken1,
                             initialValueUsd = initialValueUsd,
                             initialGasWei = mintResult.gasUsedWei,
+                            openEthPriceUsd = ethPrice,
+                            openTxHashes = Json.encodeToString(mintResult.txHashes),
                         )
                         scheduler.start(strategy)
                         telegram.sendAlert("Strategy <b>${strategy.name}</b> started! Position #${mintResult.tokenId} minted.")
@@ -254,18 +258,37 @@ fun Application.configureRouting(
                     if (!ok) return@delete call.respond(HttpStatusCode.NotFound, mapOf("error" to "Strategy not found"))
                     scheduler.stop(strategyId)
                     // Close LP position on-chain and unwrap WETH → ETH
+                    var closeResult: fi.lagrange.services.CloseResponse? = null
                     try {
                         val walletPhrase = walletService.getDecryptedPhrase(userId)
                         if (walletPhrase != null) {
                             val idempotencyKey = "stop-$strategyId-${System.currentTimeMillis()}"
-                            chainClient.close(idempotencyKey, strategy.currentTokenId, walletPhrase)
+                            closeResult = chainClient.close(idempotencyKey, strategy.currentTokenId, walletPhrase)
                         }
                     } catch (_: Exception) { /* non-fatal: DB is already updated */ }
-                    // Snapshot fees/gas at historical ETH price when strategy is stopped
+                    // Snapshot fees/gas, ETH price, and withdrawn amounts when strategy is stopped
                     try {
                         val poolState = chainClient.getPoolByPair(WETH, USDC, strategy.fee)
                         val closeEthPrice = poolState.price.toDoubleOrNull() ?: 0.0
-                        strategyService.recordClose(strategyId, closeEthPrice)
+                        val token0Amt = closeResult?.token0Amount
+                        val token1Amt = closeResult?.token1Amount
+                        val closeValueUsd = if (token0Amt != null && token1Amt != null) {
+                            val t0 = token0Amt.toBigIntegerOrNull()?.toBigDecimal()
+                                ?.divide(java.math.BigDecimal.TEN.pow(strategy.token0Decimals))?.toDouble() ?: 0.0
+                            val t1 = token1Amt.toBigIntegerOrNull()?.toBigDecimal()
+                                ?.divide(java.math.BigDecimal.TEN.pow(strategy.token1Decimals))?.toDouble() ?: 0.0
+                            if (strategy.token0Decimals == 18) t0 * closeEthPrice + t1
+                            else t1 * closeEthPrice + t0
+                        } else null
+                        val closeTxHashes = closeResult?.txHashes?.let { Json.encodeToString(it) }
+                        strategyService.recordClose(
+                            strategyId = strategyId,
+                            closeEthPriceUsd = closeEthPrice,
+                            closeToken0Amount = token0Amt,
+                            closeToken1Amount = token1Amt,
+                            closeValueUsd = closeValueUsd,
+                            closeTxHashes = closeTxHashes,
+                        )
                     } catch (_: Exception) { /* non-fatal */ }
                     telegram.sendAlert("Strategy <b>${strategy.name}</b> stopped.")
                     call.respond(mapOf("status" to "stopped"))

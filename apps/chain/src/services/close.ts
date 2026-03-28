@@ -92,12 +92,14 @@ const POSITION_MANAGER_ABI = [
 const MAX_UINT128 = 2n ** 128n - 1n
 const DEADLINE_BUFFER = 300n // 5 minutes
 
+
 export async function closePosition(req: CloseRequest): Promise<CloseResult> {
   const walletClient = createWalletClientForKey(req.walletPrivateKey)
   const tokenId = BigInt(req.tokenId)
   const deadline = BigInt(Math.floor(Date.now() / 1000)) + DEADLINE_BUFFER
   const account = walletClient.account!
   const txHashes: string[] = []
+  const txSteps: string[] = []
 
   // 1. Fetch current position
   const position = await publicClient.readContract({
@@ -124,9 +126,27 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
     })
     await publicClient.waitForTransactionReceipt({ hash: decreaseTx })
     txHashes.push(decreaseTx)
+    txSteps.push('Remove Liquidity')
   }
 
-  // 3. Collect all tokens and fees
+  // 3. Simulate collect on current chain state (post-decreaseLiquidity) to capture exact amounts
+  let token0Amount: string | undefined
+  let token1Amount: string | undefined
+  try {
+    const { result: collected } = await publicClient.simulateContract({
+      address: POSITION_MANAGER,
+      abi: POSITION_MANAGER_ABI,
+      functionName: 'collect',
+      args: [{ tokenId, recipient: account.address, amount0Max: MAX_UINT128, amount1Max: MAX_UINT128 }],
+      account: account.address,
+    })
+    token0Amount = collected[0].toString()
+    token1Amount = collected[1].toString()
+  } catch {
+    // non-fatal: amounts remain undefined
+  }
+
+  // 3b. Execute collect
   const collectTx = await walletClient.writeContract({
     address: POSITION_MANAGER,
     abi: POSITION_MANAGER_ABI,
@@ -140,6 +160,7 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
   })
   await publicClient.waitForTransactionReceipt({ hash: collectTx })
   txHashes.push(collectTx)
+  txSteps.push('Collect Tokens')
 
   // 4. Burn the NFT
   const burnTx = await walletClient.writeContract({
@@ -150,6 +171,7 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
   })
   await publicClient.waitForTransactionReceipt({ hash: burnTx })
   txHashes.push(burnTx)
+  txSteps.push('Burn NFT')
 
   // 5. Unwrap WETH → ETH so the wallet holds native ETH for future LP starts
   const wethBalance = await publicClient.readContract({
@@ -167,7 +189,8 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
     })
     await publicClient.waitForTransactionReceipt({ hash: unwrapTx })
     txHashes.push(unwrapTx)
+    txSteps.push('Unwrap WETH')
   }
 
-  return { success: true, txHashes }
+  return { success: true, txHashes, txSteps, token0Amount, token1Amount }
 }

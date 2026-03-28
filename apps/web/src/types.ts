@@ -9,6 +9,8 @@ export interface Position {
   liquidity: string
   tokensOwed0?: string
   tokensOwed1?: string
+  amount0?: string   // actual token amount in LP (not fees) — needs API support
+  amount1?: string
 }
 
 export interface PoolState {
@@ -40,6 +42,8 @@ export interface Strategy {
   initialToken0Amount: string | null
   initialToken1Amount: string | null
   initialValueUsd: number | null
+  openEthPriceUsd: number | null
+  openTxHashes: string | null   // JSON array string
 }
 
 export interface StrategyStats {
@@ -53,6 +57,10 @@ export interface StrategyStats {
   closeEthPriceUsd: number | null
   closeFeesUsd: number | null
   closeGasUsd: number | null
+  closeToken0Amount: string | null
+  closeToken1Amount: string | null
+  closeValueUsd: number | null
+  closeTxHashes: string | null   // JSON array string
   totalPollTicks: number
   inRangeTicks: number
   timeInRangePct: number
@@ -69,6 +77,7 @@ export interface RebalanceEvent {
   newTickUpper: number | null
   newTokenId: string | null
   txHashes: string | null
+  txSteps: string | null         // JSON array string
   feesCollectedToken0: string | null
   feesCollectedToken1: string | null
   gasCostWei: string | null

@@ -42,6 +42,10 @@ object Strategies : Table("strategies") {
     val initialToken0Amount = varchar("initial_token0_amount", 78).nullable()
     val initialToken1Amount = varchar("initial_token1_amount", 78).nullable()
     val initialValueUsd = double("initial_value_usd").nullable()
+    /** ETH price at strategy open time (for historical deposit USD calculations) */
+    val openEthPriceUsd = double("open_eth_price_usd").nullable()
+    /** JSON array of tx hashes for the initial mint transaction(s) */
+    val openTxHashes = text("open_tx_hashes").nullable()
     override val primaryKey = PrimaryKey(id)
 }
 
@@ -61,6 +65,12 @@ object StrategyStats : Table("strategy_stats") {
     val closeEthPriceUsd = double("close_eth_price_usd").nullable()
     val closeFeesUsd = double("close_fees_usd").nullable()
     val closeGasUsd = double("close_gas_usd").nullable()
+    /** Token amounts and USD value at close (principal + fees collected, raw units) */
+    val closeToken0Amount = varchar("close_token0_amount", 78).nullable()
+    val closeToken1Amount = varchar("close_token1_amount", 78).nullable()
+    val closeValueUsd = double("close_value_usd").nullable()
+    /** JSON array of tx hashes for the close transaction(s) */
+    val closeTxHashes = text("close_tx_hashes").nullable()
     val totalPollTicks = integer("total_poll_ticks").default(0)
     val inRangeTicks = integer("in_range_ticks").default(0)
     val timeInRangePct = double("time_in_range_pct").default(0.0)
@@ -79,6 +89,7 @@ object RebalanceEvents : Table("rebalance_events") {
     val newTickUpper = integer("new_tick_upper").nullable()
     val newTokenId = varchar("new_token_id", 78).nullable()
     val txHashes = text("tx_hashes").nullable() // JSON array
+    val txSteps = text("tx_steps").nullable() // JSON array of step labels matching txHashes
     val feesCollectedToken0 = varchar("fees_collected_token0", 78).nullable()
     val feesCollectedToken1 = varchar("fees_collected_token1", 78).nullable()
     val gasCostWei = varchar("gas_cost_wei", 78).nullable()

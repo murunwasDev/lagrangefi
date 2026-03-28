@@ -91,6 +91,7 @@ class UniswapStrategy(
                         it[status] = "success"
                         it[newTokenId] = result.newTokenId
                         it[txHashes] = Json.encodeToString(result.txHashes)
+                        it[RebalanceEvents.txSteps] = result.txSteps?.let { steps -> Json.encodeToString(steps) }
                         it[feesCollectedToken0] = fees0
                         it[feesCollectedToken1] = fees1
                         it[gasCostWei] = gasWei

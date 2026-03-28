@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "MOCK=true vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tunnel": "cloudflared tunnel --url http://localhost:5173"
   },
   "dependencies": {
     "react": "^19.2.4",

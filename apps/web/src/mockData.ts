@@ -1,6 +1,7 @@
 import type { Strategy, StrategyStats, StrategyEvent, Position, PoolState } from './types'
 
-export const MOCK_MODE = true
+// true in Vite dev server, false in production builds
+export const MOCK_MODE = import.meta.env.DEV
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 

@@ -2,6 +2,10 @@
 
 This file guides Claude Code when working in this repository.
 
+## Documentation
+
+- **[docs/BEST_PRACTICES.md](docs/BEST_PRACTICES.md)** — Coding standards, architectural patterns, and rules for every module (`api/`, `chain/`, `web/`, `k8s/`, CI/CD). Includes a prioritised TODO list of known issues. Read this before making changes to any service.
+
 ## Project overview
 
 lagrangefi is an automated Uniswap v3 LP rebalancer on Arbitrum. It monitors ETH/USDC positions and rebalances when price goes out of range. Built as a monorepo with three services: `api/` (Kotlin), `chain/` (TypeScript), `web/` (React).

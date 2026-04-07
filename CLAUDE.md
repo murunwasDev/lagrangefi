@@ -5,6 +5,7 @@ This file guides Claude Code when working in this repository.
 ## Documentation
 
 - **[docs/BEST_PRACTICES.md](docs/BEST_PRACTICES.md)** — Coding standards, architectural patterns, and rules for every module (`api/`, `chain/`, `web/`, `k8s/`, CI/CD). Includes a prioritised TODO list of known issues. Read this before making changes to any service.
+- **[.claude/skills/db/schema.md](.claude/skills/db/schema.md)** — Database schema reference used by the `/db` skill. **Must be kept in sync with `apps/api/src/main/kotlin/fi/lagrange/model/Tables.kt`.** Any time you add, remove, or rename a table or column in `Tables.kt`, update `schema.md` in the same commit.
 
 ## Project overview
 

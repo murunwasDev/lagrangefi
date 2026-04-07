@@ -399,7 +399,7 @@ class StrategyService {
         // hodlValueUsd: what the *initial* token amounts would be worth right now.
         // lpValueUsd:   what the LP position is worth right now (before this rebalance).
         // Positive IL means HODL is ahead; negative means LP is outperforming pure hold.
-        val (ilUsdNew, hodlValueUsdNew): Pair<java.math.BigDecimal?, java.math.BigDecimal?> = run {
+        val ilHodlPair = run {
             val init0Str = strategy?.get(Strategies.initialToken0Amount)
             val init1Str = strategy?.get(Strategies.initialToken1Amount)
             if (init0Str != null && init1Str != null && priceAtDecision > java.math.BigDecimal.ZERO) {
@@ -412,6 +412,8 @@ class StrategyService {
                 null to null
             }
         }
+        val ilUsdNew       = ilHodlPair.first
+        val hodlValueUsdNew = ilHodlPair.second
 
         // ── Persist ──
 

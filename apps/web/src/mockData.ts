@@ -131,6 +131,8 @@ export const MOCK_REBALANCES: Record<number, StrategyEvent[]> = {
         priceAtEnd:      2032.85,
         priceDriftPct:   -0.43,
         priceDriftUsd:   -3.11,
+        ilUsd:           1.24,
+        hodlValueUsd:    21.16,
       },
       transactions: [
         { id: 1, txHash: '0xabc1230000000000000000000000000000000000000000000000000000000001', action: 'COLLECT_FEES', gasUsedWei: 320_000_000_000_000 },
@@ -172,6 +174,8 @@ export const MOCK_REBALANCES: Record<number, StrategyEvent[]> = {
         priceAtEnd:      1995.80,
         priceDriftPct:   0.43,
         priceDriftUsd:   3.40,
+        ilUsd:           0.87,
+        hodlValueUsd:    20.45,
       },
       transactions: [
         { id: 5, txHash: '0xbbb1230000000000000000000000000000000000000000000000000000000001', action: 'COLLECT_FEES', gasUsedWei: 310_000_000_000_000 },
@@ -232,6 +236,8 @@ export const MOCK_REBALANCES: Record<number, StrategyEvent[]> = {
         priceAtEnd: null,
         priceDriftPct: null,
         priceDriftUsd: null,
+        ilUsd: null,
+        hodlValueUsd: null,
       },
       transactions: [
         { id: 9,  txHash: '0xccc1230000000000000000000000000000000000000000000000000000000001', action: 'COLLECT_FEES', gasUsedWei: 560_000_000_000_000 },

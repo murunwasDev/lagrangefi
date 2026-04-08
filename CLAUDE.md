@@ -87,21 +87,7 @@ GET  /api/v1/rebalances       recent rebalances (latest strategy)
 
 ## Database schema
 
-```
-users             id, username, password_hash, created_at
-wallets           id, user_id(FK), encrypted_phrase, created_at, updated_at
-strategies        id, user_id(FK), name, current_token_id, token0, token1, fee,
-                  range_percent, slippage_tolerance, poll_interval_seconds,
-                  status (active|paused|stopped), created_at, stopped_at
-strategy_stats    strategy_id(PK/FK), total_rebalances,
-                  fees_collected_token0, fees_collected_token1 (raw decimal strings),
-                  gas_cost_wei, total_poll_ticks, in_range_ticks, time_in_range_pct,
-                  updated_at
-rebalance_events  id, strategy_id(FK), token_id, idempotency_key, status,
-                  new_tick_lower, new_tick_upper, new_token_id, tx_hashes (JSON),
-                  fees_collected_token0, fees_collected_token1, gas_cost_wei,
-                  error_message, triggered_at, completed_at
-```
+See **[.claude/skills/db/schema.md](.claude/skills/db/schema.md)** for the full schema reference.
 
 ## CI/CD pipelines
 

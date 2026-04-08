@@ -169,21 +169,44 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
     return receipt
   }
 
-  // 1. Fetch current position
-  const position = await publicClient.readContract({
-    address: POSITION_MANAGER,
-    abi: POSITION_MANAGER_ABI,
-    functionName: 'positions',
-    args: [tokenId],
-  })
-  const liquidity = position[7]
-  const tokensOwed0 = position[10]
-  const tokensOwed1 = position[11]
+  // 1. Fetch current position. If the NFT no longer exists (burned in a prior failed rebalance),
+  //    fall through to recovery mode: skip remove/collect/burn and go straight to swap + mint
+  //    using the token pair from the request and the current wallet balance.
+  let liquidity = 0n
+  let tokensOwed0 = 0n
+  let tokensOwed1 = 0n
+  let token0: `0x${string}`
+  let token1: `0x${string}`
+  let fee: number
+  let positionExists = true
 
-  // Extract token addresses early — needed for pre-collect balance snapshot
-  const token0 = position[2] as `0x${string}`
-  const token1 = position[3] as `0x${string}`
-  const fee = position[4]
+  try {
+    const position = await publicClient.readContract({
+      address: POSITION_MANAGER,
+      abi: POSITION_MANAGER_ABI,
+      functionName: 'positions',
+      args: [tokenId],
+    })
+    liquidity = position[7]
+    tokensOwed0 = position[10]
+    tokensOwed1 = position[11]
+    token0 = position[2] as `0x${string}`
+    token1 = position[3] as `0x${string}`
+    fee = position[4]
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (!msg.includes('nonexistent token') && !msg.includes('owner query')) {
+      throw e  // unexpected error — propagate
+    }
+    // Position NFT burned in a previous failed rebalance.
+    if (!req.token0 || !req.token1 || req.fee == null) {
+      throw new Error(`Position ${req.tokenId} no longer exists and token pair not provided — cannot recover`)
+    }
+    token0 = req.token0 as `0x${string}`
+    token1 = req.token1 as `0x${string}`
+    fee = req.fee
+    positionExists = false
+  }
 
   // Pending tokens from the previous mint cycle that should be folded into this rebalance
   const pending0 = BigInt(req.pendingToken0 ?? '0')
@@ -191,6 +214,8 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
 
   // Snapshot wallet balance before collect so we can isolate true dust
   // (anything in the wallet that is NOT our tracked pending from the last cycle).
+  // In recovery mode (positionExists = false) pending already equals the wallet balance
+  // that was saved after the failed rebalance, so trueDust will be ~0.
   const [preCollectBalance0, preCollectBalance1] = await Promise.all([
     publicClient.readContract({ address: token0, abi: ERC20_ABI, functionName: 'balanceOf', args: [account.address] }),
     publicClient.readContract({ address: token1, abi: ERC20_ABI, functionName: 'balanceOf', args: [account.address] }),
@@ -201,7 +226,7 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
   let principal0 = 0n
   let principal1 = 0n
 
-  if (liquidity > 0n) {
+  if (positionExists && liquidity > 0n) {
     // 2. Simulate decreaseLiquidity first to capture principal amounts (fees = total_collected - principal)
     const decreaseParams = {
       tokenId,
@@ -238,9 +263,10 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
       throw new Error(`decreaseLiquidity reverted (tx: ${decreaseTx})`)
     }
   }
-  // If liquidity === 0: a previous rebalance removed liquidity but failed before minting.
-  // Tokens may be stranded as tokensOwed in the position manager, or already in the wallet.
-  // Either way, fall through to collect + re-mint.
+  // If positionExists && liquidity === 0: a previous rebalance removed liquidity but failed
+  // before minting. Tokens may be stranded as tokensOwed in the position manager, or already
+  // in the wallet. Either way, fall through to collect + re-mint.
+  // If !positionExists: NFT was burned in a previous failed rebalance — skip straight to mint.
 
   // From this point on, liquidity has been removed. If anything below fails, we must collect
   // any stranded tokens back to the wallet so they are never left in the contract.
@@ -249,34 +275,37 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
 
   try {
 
-  // 3. Collect tokens if any are owed (LP fees + withdrawn liquidity, or stranded from prior attempt)
-  if (liquidity > 0n || tokensOwed0 > 0n || tokensOwed1 > 0n) {
-    const collectTx = await walletClient.writeContract({
-      address: POSITION_MANAGER,
-      abi: POSITION_MANAGER_ABI,
-      functionName: 'collect',
-      args: [{
-        tokenId,
-        recipient: account.address,
-        amount0Max: MAX_UINT128,
-        amount1Max: MAX_UINT128,
-      }],
-      maxFeePerGas,
-      maxPriorityFeePerGas,
-    })
-    const collectReceipt = await trackTx(collectTx, 'COLLECT_FEES')
+  if (positionExists) {
+    // 3. Collect tokens if any are owed (LP fees + withdrawn liquidity, or stranded from prior attempt)
+    if (liquidity > 0n || tokensOwed0 > 0n || tokensOwed1 > 0n) {
+      const collectTx = await walletClient.writeContract({
+        address: POSITION_MANAGER,
+        abi: POSITION_MANAGER_ABI,
+        functionName: 'collect',
+        args: [{
+          tokenId,
+          recipient: account.address,
+          amount0Max: MAX_UINT128,
+          amount1Max: MAX_UINT128,
+        }],
+        maxFeePerGas,
+        maxPriorityFeePerGas,
+      })
+      const collectReceipt = await trackTx(collectTx, 'COLLECT_FEES')
 
-    // Parse total collected from Collect event, then subtract principal to get LP fees only
-    const totalCollected = parseTotalCollected(collectReceipt)
-    collectedFromPosition = totalCollected
-    feesCollected = totalCollected
-      ? {
-          amount0: (totalCollected.amount0 > principal0 ? totalCollected.amount0 - principal0 : 0n).toString(),
-          amount1: (totalCollected.amount1 > principal1 ? totalCollected.amount1 - principal1 : 0n).toString(),
-        }
-      : undefined
+      // Parse total collected from Collect event, then subtract principal to get LP fees only
+      const totalCollected = parseTotalCollected(collectReceipt)
+      collectedFromPosition = totalCollected
+      feesCollected = totalCollected
+        ? {
+            amount0: (totalCollected.amount0 > principal0 ? totalCollected.amount0 - principal0 : 0n).toString(),
+            amount1: (totalCollected.amount1 > principal1 ? totalCollected.amount1 - principal1 : 0n).toString(),
+          }
+        : undefined
+    }
 
-    // Burn the old NFT now that liquidity and tokens are fully withdrawn
+    // Burn the old NFT now that liquidity and tokens are fully withdrawn.
+    // Also burn zombie NFTs (0 liquidity, 0 tokensOwed) left behind by previous failed rebalances.
     const burnTx = await walletClient.writeContract({
       address: POSITION_MANAGER,
       abi: POSITION_MANAGER_ABI,
@@ -458,12 +487,15 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
   const leftoverToken0 = (finalUsable0 > deposited0 ? finalUsable0 - deposited0 : 0n).toString()
   const leftoverToken1 = (finalUsable1 > deposited1 ? finalUsable1 - deposited1 : 0n).toString()
 
-  const isRecovery = liquidity === 0n
+  const isRecovery = !positionExists || liquidity === 0n
   return { success: true, txHashes, txDetails, newTokenId, feesCollected, gasUsedWei, positionToken0Start, positionToken1Start, positionToken0End, positionToken1End, isRecovery, leftoverToken0, leftoverToken1, swapCost: swapCostResult, priceAtSwap, priceAtEnd }
 
   } catch (err) {
     // Recovery: collect any tokens still owed in the position back to the wallet so they are
     // never left stranded in the position manager contract.
+    const msg = err instanceof Error ? err.message : String(err)
+    const gasUsedWei = () => txDetails.reduce((acc, d) => acc + BigInt(d.gasUsedWei), 0n).toString()
+
     try {
       const recoverTx = await walletClient.writeContract({
         address: POSITION_MANAGER,
@@ -479,35 +511,43 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
         maxPriorityFeePerGas,
       })
       await trackTx(recoverTx, 'COLLECT_FEES')
-    } catch (collectErr) {
-      // Recovery failed — include both errors in the response
-      const msg = err instanceof Error ? err.message : String(err)
-      const collectMsg = collectErr instanceof Error ? collectErr.message : String(collectErr)
-      const gasUsedWei = txDetails.reduce((acc, d) => acc + BigInt(d.gasUsedWei), 0n).toString()
+      // Recovery collect succeeded — return collected amounts so API saves them as pending.
       return {
         success: false,
         txHashes: txDetails.map(d => d.txHash),
         txDetails,
-        error: `${msg}; recovery collect also failed: ${collectMsg}`,
+        error: `${msg}; tokens recovered to wallet`,
         feesCollected,
-        gasUsedWei,
+        gasUsedWei: gasUsedWei(),
         recoveredToken0: collectedFromPosition?.amount0.toString() ?? '0',
         recoveredToken1: collectedFromPosition?.amount1.toString() ?? '0',
       }
-    }
-    const msg = err instanceof Error ? err.message : String(err)
-    // collectedFromPosition is set when the main collect ran before the failure.
-    // Return these amounts so the API can save them as pending tokens for the next rebalance.
-    const gasUsedWei = txDetails.reduce((acc, d) => acc + BigInt(d.gasUsedWei), 0n).toString()
-    return {
-      success: false,
-      txHashes: txDetails.map(d => d.txHash),
-      txDetails,
-      error: `${msg}; tokens recovered to wallet`,
-      feesCollected,
-      gasUsedWei,
-      recoveredToken0: collectedFromPosition?.amount0.toString() ?? '0',
-      recoveredToken1: collectedFromPosition?.amount1.toString() ?? '0',
+    } catch {
+      // Recovery collect also failed — the NFT is already burned (swap/mint failure path).
+      // The tokens are already in the wallet post-swap. Read the actual wallet balance so the
+      // API saves the real current amounts as pending (not the stale pre-swap collected amounts).
+      let recoveredToken0 = collectedFromPosition?.amount0.toString() ?? '0'
+      let recoveredToken1 = collectedFromPosition?.amount1.toString() ?? '0'
+      try {
+        const [walBal0, walBal1] = await Promise.all([
+          publicClient.readContract({ address: token0, abi: ERC20_ABI, functionName: 'balanceOf', args: [account.address] }),
+          publicClient.readContract({ address: token1, abi: ERC20_ABI, functionName: 'balanceOf', args: [account.address] }),
+        ])
+        recoveredToken0 = walBal0.toString()
+        recoveredToken1 = walBal1.toString()
+      } catch {
+        // If balance reads fail, fall back to collected amounts — better than nothing
+      }
+      return {
+        success: false,
+        txHashes: txDetails.map(d => d.txHash),
+        txDetails,
+        error: `${msg}; NFT burned — tokens remain in wallet`,
+        feesCollected,
+        gasUsedWei: gasUsedWei(),
+        recoveredToken0,
+        recoveredToken1,
+      }
     }
   }
 }

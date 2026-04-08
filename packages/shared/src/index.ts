@@ -36,6 +36,14 @@ export interface RebalanceRequest {
   /** Leftover tokens from the previous mint cycle that should be folded into this rebalance */
   pendingToken0?: string
   pendingToken1?: string
+  /**
+   * Token pair info — required when the position NFT no longer exists on-chain (recovery mode).
+   * When provided and the tokenId is not found, rebalance skips the remove/collect/burn steps
+   * and goes straight to swap + mint using the wallet balance.
+   */
+  token0?: string
+  token1?: string
+  fee?: number
 }
 
 export interface FeesCollected {

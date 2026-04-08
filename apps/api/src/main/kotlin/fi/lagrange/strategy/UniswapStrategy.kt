@@ -2,6 +2,8 @@ package fi.lagrange.strategy
 
 import fi.lagrange.model.StrategyEvents
 import fi.lagrange.services.ChainClient
+import fi.lagrange.services.PoolStateResponse
+import fi.lagrange.services.PositionNotFoundException
 import fi.lagrange.services.StrategyRecord
 import fi.lagrange.services.StrategyService
 import fi.lagrange.services.TelegramNotifier
@@ -31,6 +33,7 @@ class UniswapStrategy(
      * Run one poll cycle for the given strategy using the provided wallet phrase.
      * - Updates time-in-range stats every tick
      * - Triggers rebalance only when out of range
+     * - Triggers immediate recovery rebalance if the position NFT no longer exists on-chain
      */
     suspend fun execute(strategy: StrategyRecord, walletPhrase: String) {
         val tokenId = strategy.currentTokenId
@@ -51,20 +54,31 @@ class UniswapStrategy(
             return
         }
 
-        val position = chainClient.getPosition(tokenId)
-        val poolState = chainClient.getPoolState(tokenId)
+        // Get position and pool state. If the NFT no longer exists (burned in a prior failed
+        // rebalance), skip the in-range check and trigger a recovery rebalance immediately.
+        var poolState: PoolStateResponse
+        try {
+            val position = chainClient.getPosition(tokenId)
+            poolState = chainClient.getPoolState(tokenId)
 
-        val currentTick = poolState.tick
-        val inRange = currentTick >= position.tickLower && currentTick < position.tickUpper
+            val currentTick = poolState.tick
+            val inRange = currentTick >= position.tickLower && currentTick < position.tickUpper
 
-        strategyService.recordPollTick(strategy.id, inRange)
+            strategyService.recordPollTick(strategy.id, inRange)
 
-        if (inRange) {
-            log.debug("Strategy=${strategy.id} in range (tick=$currentTick range=[${position.tickLower},${position.tickUpper}])")
-            return
+            if (inRange) {
+                log.debug("Strategy=${strategy.id} in range (tick=$currentTick range=[${position.tickLower},${position.tickUpper}])")
+                return
+            }
+            log.info("Strategy=${strategy.id} OUT OF RANGE — tick=$currentTick range=[${position.tickLower},${position.tickUpper}]. Rebalancing.")
+            telegram.sendAlert("[${strategy.name}] Out of range! tick=$currentTick range=[${position.tickLower},${position.tickUpper}]. Rebalancing...")
+        } catch (e: PositionNotFoundException) {
+            // Position NFT was burned in a previous failed rebalance. Tokens are in the wallet
+            // (saved as pending). Skip in-range check and trigger a recovery rebalance now.
+            log.warn("Strategy=${strategy.id} position $tokenId no longer exists — triggering recovery rebalance")
+            telegram.sendAlert("[${strategy.name}] Recovering lost position — re-minting with wallet balance...")
+            poolState = chainClient.getPoolByPair(strategy.token0, strategy.token1, strategy.fee)
         }
-
-        log.info("Strategy=${strategy.id} OUT OF RANGE — tick=$currentTick range=[${position.tickLower},${position.tickUpper}]. Rebalancing.")
 
         val hasPending = transaction {
             StrategyEvents.selectAll()
@@ -79,9 +93,7 @@ class UniswapStrategy(
             return
         }
 
-        telegram.sendAlert("[${strategy.name}] Out of range! tick=$currentTick range=[${position.tickLower},${position.tickUpper}]. Rebalancing...")
-
-        val (newTickLower, newTickUpper) = calculateNewRange(currentTick, position.fee, strategy.rangePercent)
+        val (newTickLower, newTickUpper) = calculateNewRange(poolState.tick, strategy.fee, strategy.rangePercent)
         val idempotencyKey = UUID.randomUUID().toString()
         val ethPrice = java.math.BigDecimal(poolState.price).setScale(8, java.math.RoundingMode.HALF_UP)
 
@@ -105,6 +117,9 @@ class UniswapStrategy(
                 walletPrivateKey = walletPhrase,
                 pendingToken0 = strategy.pendingToken0,
                 pendingToken1 = strategy.pendingToken1,
+                token0 = strategy.token0,
+                token1 = strategy.token1,
+                fee = strategy.fee,
             )
 
             if (result.success) {

@@ -70,7 +70,7 @@ export interface StrategyStats {
   swapCostToken1?: string
   swapCostUsd?: number
   avgPriceDriftPct?: number
-  currentIlUsd?: number | null
+  currentRebalancingDragUsd?: number | null
 }
 
 export interface ChainTransaction {
@@ -104,8 +104,8 @@ export interface RebalanceDetails {
   priceAtEnd: number | null
   priceDriftPct: number | null
   priceDriftUsd: number | null
-  // Impermanent loss
-  ilUsd: number | null
+  // Rebalancing drag
+  rebalancingDragUsd: number | null
   hodlValueUsd: number | null
 }
 

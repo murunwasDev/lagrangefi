@@ -60,7 +60,7 @@
 | swap_cost_token1 | varchar |
 | swap_cost_usd | decimal(18,2) |
 | avg_price_drift_pct | decimal(8,4) |
-| current_il_usd | decimal(18,2) nullable |
+| current_rebalancing_drag_usd | decimal(18,2) nullable |
 | total_poll_ticks | int |
 | in_range_ticks | int |
 | time_in_range_pct | double |
@@ -102,5 +102,5 @@
 | price_at_end | decimal(18,8) |
 | price_drift_pct | decimal(8,4) |
 | price_drift_usd | decimal(18,2) |
-| il_usd | decimal(18,2) nullable |
+| rebalancing_drag_usd | decimal(18,2) nullable |
 | hodl_value_usd | decimal(18,2) nullable |

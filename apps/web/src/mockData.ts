@@ -131,7 +131,7 @@ export const MOCK_REBALANCES: Record<number, StrategyEvent[]> = {
         priceAtEnd:      2032.85,
         priceDriftPct:   -0.43,
         priceDriftUsd:   -3.11,
-        ilUsd:           1.24,
+        rebalancingDragUsd:           1.24,
         hodlValueUsd:    21.16,
       },
       transactions: [
@@ -174,7 +174,7 @@ export const MOCK_REBALANCES: Record<number, StrategyEvent[]> = {
         priceAtEnd:      1995.80,
         priceDriftPct:   0.43,
         priceDriftUsd:   3.40,
-        ilUsd:           0.87,
+        rebalancingDragUsd:           0.87,
         hodlValueUsd:    20.45,
       },
       transactions: [
@@ -236,7 +236,7 @@ export const MOCK_REBALANCES: Record<number, StrategyEvent[]> = {
         priceAtEnd: null,
         priceDriftPct: null,
         priceDriftUsd: null,
-        ilUsd: null,
+        rebalancingDragUsd: null,
         hodlValueUsd: null,
       },
       transactions: [

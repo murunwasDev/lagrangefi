@@ -150,9 +150,33 @@ export async function getTokenDecimals(tokenAddress: `0x${string}`): Promise<num
   })
 }
 
+// keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)")
+const SWAP_EVENT_TOPIC = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67' as const
+
+/** Parse Uniswap v3 Pool Swap event from a tx receipt */
+export function parseSwapEvent(
+  receipt: { logs: ReadonlyArray<{ topics: readonly string[]; data: string }> },
+  zeroForOne: boolean,
+): { amountOut: bigint; sqrtPriceX96After: bigint } | null {
+  const log = receipt.logs.find(l =>
+    l.topics[0]?.toLowerCase() === SWAP_EVENT_TOPIC
+  )
+  if (!log || !log.data || log.data === '0x') return null
+
+  const data = log.data.slice(2)
+  if (data.length < 192) return null
+
+  const amount0 = BigInt.asIntN(256, BigInt('0x' + data.slice(0, 64)))
+  const amount1 = BigInt.asIntN(256, BigInt('0x' + data.slice(64, 128)))
+  const sqrtPriceX96After = BigInt('0x' + data.slice(128, 192))
+
+  const amountOut = zeroForOne ? -amount1 : -amount0
+  return { amountOut, sqrtPriceX96After }
+}
+
 /**
  * Execute a single-hop swap via Uniswap v3 SwapRouter.
- * Approves the router, swaps, and returns the tx hash.
+ * Approves the router, swaps, and returns the tx hash plus swap event data.
  */
 export async function executeSwap(params: {
   tokenIn: `0x${string}`
@@ -162,8 +186,11 @@ export async function executeSwap(params: {
   amountOutMinimum: bigint
   deadline: bigint
   walletClient: WalletClientWithChain
-}): Promise<`0x${string}`> {
-  const { walletClient } = params
+  zeroForOne: boolean
+  maxFeePerGas?: bigint
+  maxPriorityFeePerGas?: bigint
+}): Promise<{ txHash: `0x${string}`; amountOut: bigint; sqrtPriceX96After: bigint }> {
+  const { walletClient, maxFeePerGas, maxPriorityFeePerGas } = params
   const account = walletClient.account!
 
   // Approve SwapRouter to spend tokenIn
@@ -172,6 +199,8 @@ export async function executeSwap(params: {
     abi: ERC20_ABI,
     functionName: 'approve',
     args: [SWAP_ROUTER, params.amountIn],
+    maxFeePerGas,
+    maxPriorityFeePerGas,
   })
   await publicClient.waitForTransactionReceipt({ hash: approveTx })
 
@@ -189,8 +218,15 @@ export async function executeSwap(params: {
       amountOutMinimum: params.amountOutMinimum,
       sqrtPriceLimitX96: 0n,
     }],
+    maxFeePerGas,
+    maxPriorityFeePerGas,
   })
-  await publicClient.waitForTransactionReceipt({ hash: swapTx })
+  const swapReceipt = await publicClient.waitForTransactionReceipt({ hash: swapTx })
+  const swapEvent = parseSwapEvent(swapReceipt, params.zeroForOne)
 
-  return swapTx
+  return {
+    txHash: swapTx,
+    amountOut: swapEvent?.amountOut ?? 0n,
+    sqrtPriceX96After: swapEvent?.sqrtPriceX96After ?? 0n,
+  }
 }

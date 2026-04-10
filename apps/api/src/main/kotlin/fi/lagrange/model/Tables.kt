@@ -66,6 +66,14 @@ object StrategyStats : Table("strategy_stats") {
     /** Total gas and fees in USD, accumulated at historical ETH price per rebalance */
     val gasCostUsd = decimal("gas_cost_usd", 18, 2).default(java.math.BigDecimal.ZERO)
     val feesCollectedUsd = decimal("fees_collected_usd", 18, 2).default(java.math.BigDecimal.ZERO)
+    // Swap cost accumulation
+    val swapCostToken0   = varchar("swap_cost_token0", 78).default("0")
+    val swapCostToken1   = varchar("swap_cost_token1", 78).default("0")
+    val swapCostUsd      = decimal("swap_cost_usd", 18, 2).default(java.math.BigDecimal.ZERO)
+    // Average price drift per rebalance (running average, not a sum)
+    val avgPriceDriftPct = decimal("avg_price_drift_pct", 8, 4).default(java.math.BigDecimal.ZERO)
+    // Rebalancing drag snapshot from the most recent rebalance (hodlValue - lpValue at priceAtDecision)
+    val currentRebalancingDragUsd = decimal("current_rebalancing_drag_usd", 18, 2).nullable()
     val totalPollTicks = integer("total_poll_ticks").default(0)
     val inRangeTicks = integer("in_range_ticks").default(0)
     val timeInRangePct = double("time_in_range_pct").default(0.0)
@@ -101,6 +109,20 @@ object RebalanceDetails : Table("rebalance_details") {
     val positionToken1Start = varchar("position_token1_start", 78)
     val positionToken0End = varchar("position_token0_end", 78)
     val positionToken1End = varchar("position_token1_end", 78)
+    // Swap cost (null when no swap was needed)
+    val swapCostAmountIn      = varchar("swap_cost_amount_in", 78).nullable()
+    val swapCostAmountOut     = varchar("swap_cost_amount_out", 78).nullable()
+    val swapCostFairAmountOut = varchar("swap_cost_fair_amount_out", 78).nullable()
+    val swapCostDirection     = varchar("swap_cost_direction", 12).nullable()  // zeroForOne | oneForZero
+    val swapCostUsd           = decimal("swap_cost_usd", 18, 2).nullable()
+    // Price drift
+    val priceAtDecision = decimal("price_at_decision", 18, 8).nullable()
+    val priceAtEnd      = decimal("price_at_end", 18, 8).nullable()
+    val priceDriftPct   = decimal("price_drift_pct", 8, 4).nullable()
+    val priceDriftUsd   = decimal("price_drift_usd", 18, 2).nullable()
+    // Rebalancing drag at this rebalance moment (hodlValueUsd - lpValueUsd at priceAtDecision)
+    val rebalancingDragUsd = decimal("rebalancing_drag_usd", 18, 2).nullable()
+    val hodlValueUsd       = decimal("hodl_value_usd", 18, 2).nullable()
     override val primaryKey = PrimaryKey(strategyEventId)
 }
 

@@ -130,7 +130,7 @@ export async function mintPosition(req: MintRequest): Promise<MintResult> {
 
   if (swap !== null) {
     const [tokenIn, tokenOut] = swap.zeroForOne ? [TOKEN0, TOKEN1] : [TOKEN1, TOKEN0]
-    const swapTx = await executeSwap({
+    const swapResult = await executeSwap({
       tokenIn,
       tokenOut,
       fee: req.feeTier,
@@ -138,8 +138,9 @@ export async function mintPosition(req: MintRequest): Promise<MintResult> {
       amountOutMinimum: swap.amountOutMinimum,
       deadline,
       walletClient,
+      zeroForOne: swap.zeroForOne,
     })
-    await trackTx(swapTx, 'SWAP')
+    await trackTx(swapResult.txHash, 'SWAP')
   }
 
   // 6. Re-fetch balances and compute only "our" amounts (intended ± swap delta).

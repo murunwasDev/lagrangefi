@@ -65,6 +65,12 @@ export interface StrategyStats {
   timeInRangePct: number
   avgRebalanceIntervalHours: number | null
   updatedAt: string
+  // Swap cost tracking (new — may be absent on old records)
+  swapCostToken0?: string
+  swapCostToken1?: string
+  swapCostUsd?: number
+  avgPriceDriftPct?: number
+  currentRebalancingDragUsd?: number | null
 }
 
 export interface ChainTransaction {
@@ -87,6 +93,20 @@ export interface RebalanceDetails {
   positionToken1Start: string | null
   positionToken0End: string | null
   positionToken1End: string | null
+  // Swap cost (null when no swap was needed)
+  swapCostAmountIn: string | null
+  swapCostAmountOut: string | null
+  swapCostFairAmountOut: string | null
+  swapCostDirection: 'zeroForOne' | 'oneForZero' | null
+  swapCostUsd: number | null
+  // Price drift P&L
+  priceAtDecision: number | null
+  priceAtEnd: number | null
+  priceDriftPct: number | null
+  priceDriftUsd: number | null
+  // Rebalancing drag
+  rebalancingDragUsd: number | null
+  hodlValueUsd: number | null
 }
 
 export interface StrategyEvent {

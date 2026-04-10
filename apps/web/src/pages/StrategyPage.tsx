@@ -205,8 +205,9 @@ function TxList({ hashes, steps }: { hashes: string[]; steps?: string[] | null }
     <div className="space-y-2">
       {hashes.map((h, i) => (
         <div key={h} className="flex items-center justify-between gap-3">
-          <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide shrink-0 w-28">
-            {steps?.[i] ?? `Transaction ${i + 1}`}
+          <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide shrink-0 w-28 flex items-center gap-1.5">
+            <span className="text-[9px] font-bold text-gray-300 tabular-nums">#{i + 1}</span>
+            {steps?.[i] ?? `Tx ${i + 1}`}
           </span>
           <div className="flex items-center gap-1.5 min-w-0">
             <Tooltip tip={h}>
@@ -490,6 +491,105 @@ function RebalanceEventRow({ event, index, dec0, dec1, label0, label1, expanded,
                 </div>
               </div>
             )}
+
+            {/* Execution P&L breakdown — only shown when API provides price data */}
+            {d?.priceAtDecision != null && (() => {
+              const swapCostUsd = d.swapCostUsd ?? 0
+              const driftUsd    = d.priceDriftUsd ?? 0
+              const driftPct    = d.priceDriftPct ?? 0
+              const pDecision   = d.priceAtDecision
+              const pEnd        = d.priceAtEnd ?? pDecision
+              const swapDir     = d.swapCostDirection
+              const swapIn      = d.swapCostAmountIn ?? '0'
+              const swapOut     = d.swapCostAmountOut ?? '0'
+              const hasSwap     = d.swapCostAmountIn != null
+
+              const swapInHuman  = swapDir === 'oneForZero'
+                ? (Number(BigInt(swapIn)) / 1e18).toFixed(4) + ' ' + (label1.includes('WETH') ? label1 : label0)
+                : (Number(BigInt(swapIn)) / 1e6).toFixed(2) + ' ' + (label0.includes('USDC') ? label0 : label1)
+              const swapOutHuman = swapDir === 'oneForZero'
+                ? (Number(BigInt(swapOut)) / 1e6).toFixed(2) + ' ' + (label0.includes('USDC') ? label0 : label1)
+                : (Number(BigInt(swapOut)) / 1e18).toFixed(4) + ' ' + (label1.includes('WETH') ? label1 : label0)
+
+              const driftIsPositive = driftUsd >= 0
+              const totalImpact = (hasSwap ? -Math.abs(swapCostUsd) : 0) + driftUsd
+              const totalImpactPositive = totalImpact >= 0
+
+              return (
+                <div className="bg-white/60 border border-white/80 rounded-xl p-3 space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">Execution Impact</p>
+
+                  {/* Swap cost */}
+                  {hasSwap !== false && (
+                    <div className="flex justify-between items-start">
+                      <span className="text-xs text-orange-600 flex items-center gap-1.5 mt-0.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />
+                        Swap cost
+                      </span>
+                      <div className="text-right">
+                        <p className="text-xs font-bold font-mono text-orange-500">−{formatUsd(Math.abs(swapCostUsd))}</p>
+                        <p className="text-[10px] text-gray-400 font-mono mt-0.5">{swapInHuman} → {swapOutHuman}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Price drift */}
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-xs text-violet-600 flex items-center gap-1.5 mt-0.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
+                        Price drift
+                      </span>
+                      <p className="text-[10px] text-gray-400 font-mono mt-0.5 ml-3.5">
+                        ${formatPrice(pDecision)} → ${formatPrice(pEnd)}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-xs font-bold font-mono ${driftIsPositive ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {driftIsPositive ? '+' : ''}{formatUsd(driftUsd)}
+                      </p>
+                      <p className={`text-[10px] font-mono mt-0.5 ${driftIsPositive ? 'text-emerald-500' : 'text-red-400'}`}>
+                        {driftIsPositive ? '+' : ''}{driftPct.toFixed(2)}%
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Total execution impact */}
+                  <div className="flex justify-between items-center pt-1.5 border-t border-gray-100">
+                    <span className="text-xs font-medium text-gray-500">Execution impact</span>
+                    <span className={`text-xs font-bold font-mono ${totalImpactPositive ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {totalImpactPositive ? '+' : ''}{formatUsd(totalImpact)}
+                    </span>
+                  </div>
+                </div>
+              )
+            })()}
+
+            {d?.rebalancingDragUsd != null && (() => {
+              const il = d.rebalancingDragUsd!
+              const ahead = il <= 0
+              return (
+                <div className={`bg-white/60 border rounded-xl p-3 space-y-1.5 ${ahead ? 'border-emerald-100/80' : 'border-orange-100/80'}`}>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">Rebalancing Drag</p>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className={`text-xs font-medium flex items-center gap-1.5 ${ahead ? 'text-emerald-700' : 'text-orange-600'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ahead ? 'bg-emerald-400' : 'bg-orange-400'}`} />
+                        {ahead ? 'LP ahead of HODL' : 'HODL ahead of LP'}
+                      </span>
+                      {d.hodlValueUsd != null && (
+                        <p className="text-[10px] text-gray-400 font-mono mt-0.5 ml-3">
+                          HODL {formatUsd(d.hodlValueUsd)} vs LP {formatUsd(d.hodlValueUsd - il)}
+                        </p>
+                      )}
+                    </div>
+                    <p className={`text-xs font-bold font-mono ${ahead ? 'text-emerald-600' : 'text-orange-500'}`}>
+                      {ahead ? '' : '+'}{formatUsd(il)}
+                    </p>
+                  </div>
+                </div>
+              )
+            })()}
 
             {ratioBefore && ratioAfter && (
               <div className="bg-white/60 border border-white/80 rounded-xl p-3">
@@ -1320,6 +1420,40 @@ export default function StrategyPage({ view = 'dashboard' }: { view?: 'dashboard
                               </div>
                             </div>
 
+                            {/* Swap costs */}
+                            {st.swapCostUsd != null && st.swapCostUsd > 0 && (
+                              <div className="flex justify-between items-start px-2.5 py-1.5 rounded-lg bg-orange-50/50 border border-orange-100/60">
+                                <span className="text-xs font-medium text-orange-600 flex items-center gap-1.5 mt-0.5">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />
+                                  Swap costs
+                                </span>
+                                <div className="text-right">
+                                  <p className="text-xs font-bold text-orange-500 font-mono">−{formatUsd(st.swapCostUsd)}</p>
+                                  <p className="text-[11px] text-gray-400 font-mono mt-0.5">pool fee + slippage</p>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Avg price drift */}
+                            {st.avgPriceDriftPct != null && (() => {
+                              const driftPct = st.avgPriceDriftPct
+                              const positive = driftPct >= 0
+                              return (
+                                <div className="flex justify-between items-start px-2.5 py-1.5 rounded-lg bg-violet-50/50 border border-violet-100/60">
+                                  <div>
+                                    <span className="text-xs font-medium text-violet-600 flex items-center gap-1.5 mt-0.5">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
+                                      Avg price drift
+                                    </span>
+                                    <p className="text-[10px] text-gray-400 mt-0.5 ml-3.5">ETH move during execution</p>
+                                  </div>
+                                  <p className={`text-xs font-bold font-mono ${positive ? 'text-emerald-600' : 'text-red-500'}`}>
+                                    {positive ? '+' : ''}{driftPct.toFixed(2)}% avg
+                                  </p>
+                                </div>
+                              )
+                            })()}
+
                             {/* Compare to Hold row (active only) */}
                             {s.status === 'ACTIVE' && compareToHold && (
                               <div className={`flex justify-between items-start px-2.5 py-1.5 rounded-lg border ${
@@ -1344,6 +1478,28 @@ export default function StrategyPage({ view = 'dashboard' }: { view?: 'dashboard
                                 </div>
                               </div>
                             )}
+
+                            {/* Rebalancing drag (last rebalance snapshot) */}
+                            {st?.currentRebalancingDragUsd != null && (() => {
+                              const il = st.currentRebalancingDragUsd!
+                              const ahead = il <= 0
+                              return (
+                                <div className={`flex justify-between items-start px-2.5 py-1.5 rounded-lg border ${
+                                  ahead ? 'bg-emerald-50/40 border-emerald-100/50' : 'bg-orange-50/40 border-orange-100/50'
+                                }`}>
+                                  <div>
+                                    <span className={`text-xs font-medium flex items-center gap-1.5 mt-0.5 ${ahead ? 'text-emerald-700' : 'text-orange-600'}`}>
+                                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ahead ? 'bg-emerald-400' : 'bg-orange-400'}`} />
+                                      Rebalancing drag
+                                    </span>
+                                    <p className="text-[10px] text-gray-400 mt-0.5 ml-3">HODL − LP at last rebalance</p>
+                                  </div>
+                                  <p className={`text-xs font-bold font-mono ${ahead ? 'text-emerald-600' : 'text-orange-500'}`}>
+                                    {ahead ? '' : '+'}{formatUsd(il)}
+                                  </p>
+                                </div>
+                              )
+                            })()}
 
                             {/* Fees/gas ratio bar */}
                             {st && totalReturn && st.feesCollectedUsd > 0 && (

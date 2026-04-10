@@ -55,6 +55,11 @@ data class StrategyStatsDto(
     val timeInRangePct: Double,
     val avgRebalanceIntervalHours: Double?,
     val updatedAt: String,
+    val swapCostToken0: String,
+    val swapCostToken1: String,
+    val swapCostUsd: Double,
+    val avgPriceDriftPct: Double,
+    val currentRebalancingDragUsd: Double?,
 )
 
 @Serializable
@@ -62,7 +67,7 @@ data class ChainTransactionDto(
     val id: Int,
     val txHash: String,
     val action: String,
-    val gasCostWei: Long,
+    val gasUsedWei: Long,
     val ethToUsdPrice: Double,
     val txTimestamp: String,
     val createdAt: String,
@@ -80,6 +85,23 @@ data class RebalanceDetailsDto(
     val positionToken1Start: String,
     val positionToken0End: String,
     val positionToken1End: String,
+    // Computed from chain_transactions (pre-existing gap)
+    val gasUsedWei: Long?,
+    val ethPriceUsd: Double?,
+    // Swap cost
+    val swapCostAmountIn: String?,
+    val swapCostAmountOut: String?,
+    val swapCostFairAmountOut: String?,
+    val swapCostDirection: String?,
+    val swapCostUsd: Double?,
+    // Price drift
+    val priceAtDecision: Double?,
+    val priceAtEnd: Double?,
+    val priceDriftPct: Double?,
+    val priceDriftUsd: Double?,
+    // Rebalancing drag
+    val rebalancingDragUsd: Double?,
+    val hodlValueUsd: Double?,
 )
 
 @Serializable
@@ -218,6 +240,82 @@ class StrategyService {
     }
 
     /**
+     * Convert a raw token amount to USD.
+     * isEthSide=true  → multiply by ethPrice (token is WETH)
+     * isEthSide=false → return as-is (token is a USD stablecoin)
+     */
+    private fun toUsd(
+        rawAmount: String,
+        decimals: Int,
+        ethPrice: java.math.BigDecimal,
+        isEthSide: Boolean,
+    ): java.math.BigDecimal {
+        val human = (rawAmount.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO)
+            .toBigDecimal()
+            .divide(java.math.BigDecimal.TEN.pow(decimals), decimals, java.math.RoundingMode.HALF_UP)
+        return if (isEthSide) human.multiply(ethPrice) else human
+    }
+
+    /**
+     * Record on-chain work from a failed rebalance (decreaseLiquidity / collect ran before the error).
+     * Inserts ChainTransactions for gas accounting and accumulates gas cost + fees into StrategyStats.
+     * Does NOT increment totalRebalances — the rebalance did not complete successfully.
+     */
+    fun recordFailedRebalanceOnChainWork(
+        strategyId: Int,
+        eventId: Int,
+        totalGasWei: Long,
+        ethPriceUsd: java.math.BigDecimal,
+        txRecords: List<TxRecord>,
+        fees0: String,
+        fees1: String,
+    ) = transaction {
+        val now = Clock.System.now()
+        val HALF_UP = java.math.RoundingMode.HALF_UP
+
+        for (tx in txRecords) {
+            try {
+                ChainTransactions.insert {
+                    it[strategyEventId] = eventId
+                    it[txHash] = tx.txHash
+                    it[action] = tx.action
+                    it[gasCostWei] = tx.gasUsedWei
+                    it[ethToUsdPrice] = ethPriceUsd
+                    it[txTimestamp] = now
+                    it[createdAt] = now
+                }
+            } catch (_: Exception) {
+                // Ignore duplicate tx_hash — idempotent on retry
+            }
+        }
+
+        val statsRow = StrategyStats.selectAll().where { StrategyStats.strategyId eq strategyId }.firstOrNull()
+            ?: return@transaction
+        val strategy = Strategies.selectAll().where { Strategies.id eq strategyId }.firstOrNull()
+        val dec0 = strategy?.get(Strategies.token0Decimals) ?: 18
+        val dec1 = strategy?.get(Strategies.token1Decimals) ?: 6
+        val ethSideIsToken0 = dec0 == 18
+
+        val gasEth = java.math.BigDecimal(totalGasWei)
+            .divide(java.math.BigDecimal("1000000000000000000"), 18, HALF_UP)
+        val feesUsd = (toUsd(fees0, dec0, ethPriceUsd, ethSideIsToken0) +
+                       toUsd(fees1, dec1, ethPriceUsd, !ethSideIsToken0)).setScale(2, HALF_UP)
+        val newFees0 = (statsRow[StrategyStats.feesCollectedToken0].toBigIntegerOrNull() ?: java.math.BigInteger.ZERO) +
+                       (fees0.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO)
+        val newFees1 = (statsRow[StrategyStats.feesCollectedToken1].toBigIntegerOrNull() ?: java.math.BigInteger.ZERO) +
+                       (fees1.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO)
+
+        StrategyStats.update({ StrategyStats.strategyId eq strategyId }) {
+            it[gasCostWei] = statsRow[StrategyStats.gasCostWei] + totalGasWei
+            it[gasCostUsd] = statsRow[StrategyStats.gasCostUsd] + gasEth.multiply(ethPriceUsd).setScale(2, HALF_UP)
+            it[feesCollectedToken0] = newFees0.toString()
+            it[feesCollectedToken1] = newFees1.toString()
+            it[feesCollectedUsd] = statsRow[StrategyStats.feesCollectedUsd] + feesUsd
+            it[updatedAt] = now
+        }
+    }
+
+    /**
      * Record a completed rebalance event: updates StrategyEvents to success, inserts RebalanceDetails,
      * inserts ChainTransactions, and accumulates StrategyStats — all in one transaction.
      * Must only be called when the rebalance has fully succeeded.
@@ -238,8 +336,86 @@ class StrategyService {
         positionToken1Start: String,
         positionToken0End: String,
         positionToken1End: String,
+        swapCost: SwapCostResponse?,
+        priceAtDecision: java.math.BigDecimal,
+        priceAtEnd: java.math.BigDecimal?,
     ) = transaction {
         val now = Clock.System.now()
+        val HALF_UP = java.math.RoundingMode.HALF_UP
+
+        val strategy = Strategies.selectAll().where { Strategies.id eq strategyId }.firstOrNull()
+        val dec0 = strategy?.get(Strategies.token0Decimals) ?: 18
+        val dec1 = strategy?.get(Strategies.token1Decimals) ?: 6
+        val ethSideIsToken0 = dec0 == 18  // WETH/USDC pool; for ETH/USDC (USDC=token0) this is false
+
+        // ── Compute all derived values first so both insert and stats update share them ──
+
+        val gasEth = java.math.BigDecimal(totalGasWei).divide(
+            java.math.BigDecimal("1000000000000000000"), 18, HALF_UP
+        )
+
+        // Fees USD
+        val feesUsdNew = (toUsd(fees0, dec0, ethPriceUsd, ethSideIsToken0) +
+                          toUsd(fees1, dec1, ethPriceUsd, !ethSideIsToken0))
+            .setScale(2, HALF_UP)
+
+        // Swap cost
+        val swapCostTokenOutRaw: java.math.BigInteger = swapCost?.let {
+            ((it.fairAmountOut.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO) -
+             (it.amountOut.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO))
+             .coerceAtLeast(java.math.BigInteger.ZERO)
+        } ?: java.math.BigInteger.ZERO
+
+        val swapCostUsdNew: java.math.BigDecimal = swapCost?.let {
+            val outIsToken0 = it.direction == "oneForZero"
+            val (costDec, costIsEth) = if (outIsToken0) dec0 to ethSideIsToken0 else dec1 to !ethSideIsToken0
+            toUsd(swapCostTokenOutRaw.toString(), costDec, ethPriceUsd, costIsEth).setScale(2, HALF_UP)
+        } ?: java.math.BigDecimal.ZERO
+
+        // Price drift on ETH-side principal only
+        val principalStart = if (ethSideIsToken0) positionToken0Start else positionToken1Start
+        val feesSide       = if (ethSideIsToken0) fees0 else fees1
+        val principalRaw   = ((principalStart.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO) -
+                              (feesSide.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO))
+                              .coerceAtLeast(java.math.BigInteger.ZERO)
+        val principalEthHuman = principalRaw.toBigDecimal()
+            .divide(java.math.BigDecimal.TEN.pow(18), 18, HALF_UP)
+
+        val (driftPct, driftUsd) = if (priceAtEnd != null && priceAtDecision > java.math.BigDecimal.ZERO) {
+            val pct = (priceAtEnd - priceAtDecision)
+                .divide(priceAtDecision, 6, HALF_UP)
+                .multiply(java.math.BigDecimal("100"))
+                .setScale(4, HALF_UP)
+            val usd = principalEthHuman
+                .multiply(priceAtEnd - priceAtDecision)
+                .setScale(2, HALF_UP)
+            pct to usd
+        } else {
+            java.math.BigDecimal.ZERO to java.math.BigDecimal.ZERO
+        }
+
+        // ── Rebalancing drag at decision time ──
+        // drag = hodlValueUsd - lpValueUsd, both valued at priceAtDecision.
+        // hodlValueUsd: what the *initial* token amounts would be worth at this price.
+        // lpValueUsd:   what the LP position is worth right now (before this rebalance).
+        // Positive drag means HODL is ahead; negative means LP is outperforming pure hold.
+        val ilHodlPair = run {
+            val init0Str = strategy?.get(Strategies.initialToken0Amount)
+            val init1Str = strategy?.get(Strategies.initialToken1Amount)
+            if (init0Str != null && init1Str != null && priceAtDecision > java.math.BigDecimal.ZERO) {
+                val hodl = toUsd(init0Str, dec0, priceAtDecision, ethSideIsToken0) +
+                           toUsd(init1Str, dec1, priceAtDecision, !ethSideIsToken0)
+                val lp   = toUsd(positionToken0Start, dec0, priceAtDecision, ethSideIsToken0) +
+                           toUsd(positionToken1Start, dec1, priceAtDecision, !ethSideIsToken0)
+                (hodl - lp).setScale(2, HALF_UP) to hodl.setScale(2, HALF_UP)
+            } else {
+                null to null
+            }
+        }
+        val dragUsdNew      = ilHodlPair.first
+        val hodlValueUsdNew = ilHodlPair.second
+
+        // ── Persist ──
 
         StrategyEvents.update({ StrategyEvents.id eq eventId }) {
             it[status] = "success"
@@ -259,6 +435,17 @@ class StrategyService {
             it[RebalanceDetails.positionToken1Start] = positionToken1Start
             it[RebalanceDetails.positionToken0End] = positionToken0End
             it[RebalanceDetails.positionToken1End] = positionToken1End
+            it[RebalanceDetails.swapCostAmountIn]      = swapCost?.amountIn
+            it[RebalanceDetails.swapCostAmountOut]     = swapCost?.amountOut
+            it[RebalanceDetails.swapCostFairAmountOut] = swapCost?.fairAmountOut
+            it[RebalanceDetails.swapCostDirection]     = swapCost?.direction
+            it[RebalanceDetails.swapCostUsd]           = if (swapCost != null) swapCostUsdNew else null
+            it[RebalanceDetails.priceAtDecision]       = priceAtDecision.setScale(8, HALF_UP)
+            it[RebalanceDetails.priceAtEnd]            = priceAtEnd?.setScale(8, HALF_UP)
+            it[RebalanceDetails.priceDriftPct]         = driftPct
+            it[RebalanceDetails.priceDriftUsd]         = driftUsd
+            it[RebalanceDetails.rebalancingDragUsd]     = dragUsdNew
+            it[RebalanceDetails.hodlValueUsd]          = hodlValueUsdNew
         }
 
         for (tx in txRecords) {
@@ -280,34 +467,38 @@ class StrategyService {
                 (fees0.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO)
         val newFees1 = (statsRow[StrategyStats.feesCollectedToken1].toBigIntegerOrNull() ?: java.math.BigInteger.ZERO) +
                 (fees1.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO)
-        val newGasWei = statsRow[StrategyStats.gasCostWei] + totalGasWei
 
-        val gasEth = java.math.BigDecimal(totalGasWei).divide(
-            java.math.BigDecimal("1000000000000000000"), 18, java.math.RoundingMode.HALF_UP
-        )
-        val newGasUsd = statsRow[StrategyStats.gasCostUsd] +
-                gasEth.multiply(ethPriceUsd).setScale(2, java.math.RoundingMode.HALF_UP)
+        val (newSwapCostToken0, newSwapCostToken1) = if (swapCost != null) {
+            if (swapCost.direction == "oneForZero") {
+                val prev = statsRow[StrategyStats.swapCostToken0].toBigIntegerOrNull() ?: java.math.BigInteger.ZERO
+                (prev + swapCostTokenOutRaw).toString() to statsRow[StrategyStats.swapCostToken1]
+            } else {
+                val prev = statsRow[StrategyStats.swapCostToken1].toBigIntegerOrNull() ?: java.math.BigInteger.ZERO
+                statsRow[StrategyStats.swapCostToken0] to (prev + swapCostTokenOutRaw).toString()
+            }
+        } else {
+            statsRow[StrategyStats.swapCostToken0] to statsRow[StrategyStats.swapCostToken1]
+        }
 
-        val strategy = Strategies.selectAll().where { Strategies.id eq strategyId }.firstOrNull()
-        val dec0 = strategy?.get(Strategies.token0Decimals) ?: 18
-        val dec1 = strategy?.get(Strategies.token1Decimals) ?: 6
-        val fee0Human = (fees0.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO)
-            .toBigDecimal().divide(java.math.BigDecimal.TEN.pow(dec0), dec0, java.math.RoundingMode.HALF_UP)
-        val fee1Human = (fees1.toBigIntegerOrNull() ?: java.math.BigInteger.ZERO)
-            .toBigDecimal().divide(java.math.BigDecimal.TEN.pow(dec1), dec1, java.math.RoundingMode.HALF_UP)
-        val feesUsdNew = if (dec0 == 18)
-            fee0Human.multiply(ethPriceUsd).add(fee1Human).setScale(2, java.math.RoundingMode.HALF_UP)
-        else
-            fee1Human.multiply(ethPriceUsd).add(fee0Human).setScale(2, java.math.RoundingMode.HALF_UP)
-        val newFeesUsd = statsRow[StrategyStats.feesCollectedUsd] + feesUsdNew
+        val newTotalRebalances = statsRow[StrategyStats.totalRebalances] + 1
+        val oldAvgDrift = statsRow[StrategyStats.avgPriceDriftPct]
+        val newAvgDrift = if (newTotalRebalances == 1) driftPct
+        else (oldAvgDrift.multiply(java.math.BigDecimal(newTotalRebalances - 1)) + driftPct)
+            .divide(java.math.BigDecimal(newTotalRebalances), 4, HALF_UP)
 
         StrategyStats.update({ StrategyStats.strategyId eq strategyId }) {
-            it[totalRebalances] = statsRow[StrategyStats.totalRebalances] + 1
+            it[totalRebalances] = newTotalRebalances
             it[feesCollectedToken0] = newFees0.toString()
             it[feesCollectedToken1] = newFees1.toString()
-            it[gasCostWei] = newGasWei
-            it[gasCostUsd] = newGasUsd
-            it[feesCollectedUsd] = newFeesUsd
+            it[gasCostWei] = statsRow[StrategyStats.gasCostWei] + totalGasWei
+            it[gasCostUsd] = statsRow[StrategyStats.gasCostUsd] +
+                gasEth.multiply(ethPriceUsd).setScale(2, HALF_UP)
+            it[feesCollectedUsd] = statsRow[StrategyStats.feesCollectedUsd] + feesUsdNew
+            it[swapCostToken0] = newSwapCostToken0
+            it[swapCostToken1] = newSwapCostToken1
+            it[StrategyStats.swapCostUsd] = statsRow[StrategyStats.swapCostUsd] + swapCostUsdNew
+            it[avgPriceDriftPct] = newAvgDrift
+            it[StrategyStats.currentRebalancingDragUsd] = dragUsdNew
             it[updatedAt] = now
         }
     }
@@ -360,6 +551,11 @@ class StrategyService {
             timeInRangePct = stats[StrategyStats.timeInRangePct],
             avgRebalanceIntervalHours = avgInterval,
             updatedAt = stats[StrategyStats.updatedAt].toString(),
+            swapCostToken0 = stats[StrategyStats.swapCostToken0],
+            swapCostToken1 = stats[StrategyStats.swapCostToken1],
+            swapCostUsd = stats[StrategyStats.swapCostUsd].toDouble(),
+            avgPriceDriftPct = stats[StrategyStats.avgPriceDriftPct].toDouble(),
+            currentRebalancingDragUsd = stats[StrategyStats.currentRebalancingDragUsd]?.toDouble(),
         )
     }
 
@@ -377,6 +573,27 @@ class StrategyService {
         events.map { eventRow ->
             val eventId = eventRow[StrategyEvents.id]
 
+            // Query transactions first — needed for gasUsedWei and ethPriceUsd on details
+            val txRows = ChainTransactions.selectAll()
+                .where { ChainTransactions.strategyEventId eq eventId }
+                .orderBy(ChainTransactions.txTimestamp, SortOrder.ASC)
+                .toList()
+
+            val txs = txRows.map { tx ->
+                ChainTransactionDto(
+                    id = tx[ChainTransactions.id],
+                    txHash = tx[ChainTransactions.txHash],
+                    action = tx[ChainTransactions.action],
+                    gasUsedWei = tx[ChainTransactions.gasCostWei],
+                    ethToUsdPrice = tx[ChainTransactions.ethToUsdPrice].toDouble(),
+                    txTimestamp = tx[ChainTransactions.txTimestamp].toString(),
+                    createdAt = tx[ChainTransactions.createdAt].toString(),
+                )
+            }
+
+            val totalGasUsed = txRows.sumOf { it[ChainTransactions.gasCostWei] }.takeIf { it > 0L }
+            val firstEthPrice = txRows.firstOrNull()?.get(ChainTransactions.ethToUsdPrice)?.toDouble()
+
             val details = RebalanceDetails.selectAll()
                 .where { RebalanceDetails.strategyEventId eq eventId }
                 .firstOrNull()?.let { d ->
@@ -391,21 +608,19 @@ class StrategyService {
                         positionToken1Start = d[RebalanceDetails.positionToken1Start],
                         positionToken0End = d[RebalanceDetails.positionToken0End],
                         positionToken1End = d[RebalanceDetails.positionToken1End],
-                    )
-                }
-
-            val txs = ChainTransactions.selectAll()
-                .where { ChainTransactions.strategyEventId eq eventId }
-                .orderBy(ChainTransactions.txTimestamp, SortOrder.ASC)
-                .map { tx ->
-                    ChainTransactionDto(
-                        id = tx[ChainTransactions.id],
-                        txHash = tx[ChainTransactions.txHash],
-                        action = tx[ChainTransactions.action],
-                        gasCostWei = tx[ChainTransactions.gasCostWei],
-                        ethToUsdPrice = tx[ChainTransactions.ethToUsdPrice].toDouble(),
-                        txTimestamp = tx[ChainTransactions.txTimestamp].toString(),
-                        createdAt = tx[ChainTransactions.createdAt].toString(),
+                        gasUsedWei = totalGasUsed,
+                        ethPriceUsd = d[RebalanceDetails.priceAtDecision]?.toDouble() ?: firstEthPrice,
+                        swapCostAmountIn      = d[RebalanceDetails.swapCostAmountIn],
+                        swapCostAmountOut     = d[RebalanceDetails.swapCostAmountOut],
+                        swapCostFairAmountOut = d[RebalanceDetails.swapCostFairAmountOut],
+                        swapCostDirection     = d[RebalanceDetails.swapCostDirection],
+                        swapCostUsd           = d[RebalanceDetails.swapCostUsd]?.toDouble(),
+                        priceAtDecision       = d[RebalanceDetails.priceAtDecision]?.toDouble(),
+                        priceAtEnd            = d[RebalanceDetails.priceAtEnd]?.toDouble(),
+                        priceDriftPct         = d[RebalanceDetails.priceDriftPct]?.toDouble(),
+                        priceDriftUsd         = d[RebalanceDetails.priceDriftUsd]?.toDouble(),
+                        rebalancingDragUsd    = d[RebalanceDetails.rebalancingDragUsd]?.toDouble(),
+                        hodlValueUsd          = d[RebalanceDetails.hodlValueUsd]?.toDouble(),
                     )
                 }
 

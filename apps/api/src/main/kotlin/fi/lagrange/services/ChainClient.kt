@@ -6,10 +6,14 @@ import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+
+/** Thrown when the chain service reports that a Uniswap NFT position no longer exists on-chain. */
+class PositionNotFoundException(message: String) : Exception(message)
 
 @Serializable
 data class PositionResponse(
@@ -43,6 +47,14 @@ data class FeesCollectedResponse(
 )
 
 @Serializable
+data class SwapCostResponse(
+    val amountIn:      String,
+    val amountOut:     String,
+    val fairAmountOut: String,
+    val direction:     String,  // "zeroForOne" | "oneForZero"
+)
+
+@Serializable
 data class TxRecord(
     val txHash: String,
     val action: String,
@@ -66,6 +78,12 @@ data class RebalanceResponse(
     val isRecovery: Boolean? = null,
     val leftoverToken0: String? = null,
     val leftoverToken1: String? = null,
+    val swapCost:    SwapCostResponse? = null,
+    val priceAtSwap: String? = null,
+    val priceAtEnd:  String? = null,
+    /** Present on failure when collect ran before the error — total principal+fees sent to wallet */
+    val recoveredToken0: String? = null,
+    val recoveredToken1: String? = null,
 )
 
 @Serializable
@@ -98,6 +116,10 @@ data class RebalanceRequest(
     val walletPrivateKey: String,
     val pendingToken0: String = "0",
     val pendingToken1: String = "0",
+    /** Required when the position NFT may no longer exist (recovery mode). */
+    val token0: String? = null,
+    val token1: String? = null,
+    val fee: Int? = null,
 )
 
 @Serializable
@@ -158,8 +180,17 @@ class ChainClient(private val baseUrl: String) {
             setBody(mapOf("walletPrivateKey" to walletPhrase))
         }.body()
 
-    suspend fun getPosition(tokenId: String): PositionResponse =
-        http.get("$baseUrl/positions/$tokenId").body()
+    suspend fun getPosition(tokenId: String): PositionResponse {
+        val response = http.get("$baseUrl/positions/$tokenId")
+        if (!response.status.isSuccess()) {
+            val body = response.bodyAsText()
+            if (body.contains("nonexistent token", ignoreCase = true)) {
+                throw PositionNotFoundException("Position $tokenId no longer exists on-chain")
+            }
+            error("Chain service error ${response.status} for position $tokenId: $body")
+        }
+        return response.body()
+    }
 
     suspend fun getPoolState(tokenId: String): PoolStateResponse =
         http.get("$baseUrl/positions/$tokenId/pool-state").body()
@@ -205,6 +236,10 @@ class ChainClient(private val baseUrl: String) {
         walletPrivateKey: String,
         pendingToken0: String = "0",
         pendingToken1: String = "0",
+        /** Token pair for recovery mode — passed when the position NFT may no longer exist. */
+        token0: String? = null,
+        token1: String? = null,
+        fee: Int? = null,
     ): RebalanceResponse =
         longHttp.post("$baseUrl/execute/rebalance") {
             contentType(ContentType.Application.Json)
@@ -217,6 +252,9 @@ class ChainClient(private val baseUrl: String) {
                 walletPrivateKey = walletPrivateKey,
                 pendingToken0 = pendingToken0,
                 pendingToken1 = pendingToken1,
+                token0 = token0,
+                token1 = token1,
+                fee = fee,
             ))
         }.body()
 }

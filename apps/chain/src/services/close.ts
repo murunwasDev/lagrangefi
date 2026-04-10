@@ -112,6 +112,13 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
   const account = walletClient.account!
   const txDetails: TxDetail[] = []
 
+  // Fetch gas price once with a 50% buffer — prevents partial close if baseFee rises mid-execution
+  const feeData = await publicClient.estimateFeesPerGas()
+  const maxFeePerGas = feeData.maxFeePerGas !== undefined
+    ? (feeData.maxFeePerGas * 3n) / 2n
+    : undefined
+  const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas
+
   const trackTx = async (hash: `0x${string}`, action: string) => {
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     txDetails.push({ txHash: hash, action, gasUsedWei: Number(receipt.gasUsed * receipt.effectiveGasPrice) })
@@ -157,6 +164,8 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
         amount1Min: 0n,
         deadline,
       }],
+      maxFeePerGas,
+      maxPriorityFeePerGas,
     })
     const decreaseReceipt = await trackTx(decreaseTx, 'REMOVE_LIQUIDITY')
     if (decreaseReceipt.status === 'reverted') {
@@ -175,6 +184,8 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
       amount0Max: MAX_UINT128,
       amount1Max: MAX_UINT128,
     }],
+    maxFeePerGas,
+    maxPriorityFeePerGas,
   })
   const collectReceipt = await trackTx(collectTx, 'COLLECT_FEES')
   const collected = parseTotalCollected(collectReceipt)
@@ -185,6 +196,8 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
     abi: POSITION_MANAGER_ABI,
     functionName: 'burn',
     args: [tokenId],
+    maxFeePerGas,
+    maxPriorityFeePerGas,
   })
   await trackTx(burnTx, 'BURN')
 
@@ -198,6 +211,8 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
       abi: WETH_ABI,
       functionName: 'withdraw',
       args: [wethToUnwrap],
+      maxFeePerGas,
+      maxPriorityFeePerGas,
     })
     await trackTx(unwrapTx, 'WITHDRAW_TO_WALLET')
   }

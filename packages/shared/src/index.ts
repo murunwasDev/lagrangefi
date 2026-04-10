@@ -36,11 +36,26 @@ export interface RebalanceRequest {
   /** Leftover tokens from the previous mint cycle that should be folded into this rebalance */
   pendingToken0?: string
   pendingToken1?: string
+  /**
+   * Token pair info — required when the position NFT no longer exists on-chain (recovery mode).
+   * When provided and the tokenId is not found, rebalance skips the remove/collect/burn steps
+   * and goes straight to swap + mint using the wallet balance.
+   */
+  token0?: string
+  token1?: string
+  fee?: number
 }
 
 export interface FeesCollected {
   amount0: string // raw token amount (e.g. "1500000" for 1.5 USDC)
   amount1: string
+}
+
+export interface SwapCost {
+  amountIn:      string  // raw bigint string (tokenIn)
+  amountOut:     string  // actual received (tokenOut)
+  fairAmountOut: string  // at pre-swap spot price (tokenOut)
+  direction:     'zeroForOne' | 'oneForZero'
 }
 
 export interface TxDetail {
@@ -72,6 +87,19 @@ export interface RebalanceResult {
   /** Leftover tokens that did not fit into the new LP position — carry into the next rebalance */
   leftoverToken0?: string
   leftoverToken1?: string
+  /** Swap cost (absent when no swap was needed) */
+  swapCost?:    SwapCost
+  /** Human-readable token1/token0 price before the swap (e.g. "2041.57000000") */
+  priceAtSwap?: string
+  /** Human-readable token1/token0 price after the swap (from Swap event sqrtPriceX96) */
+  priceAtEnd?:  string
+  /**
+   * Present on failure when a collect ran before the failure (e.g. burn fee-cap error).
+   * Total raw token amounts (principal + fees) recovered to the wallet.
+   * The API must save these as pendingToken0/pendingToken1 so the next rebalance re-invests them.
+   */
+  recoveredToken0?: string
+  recoveredToken1?: string
 }
 
 export interface MintRequest {

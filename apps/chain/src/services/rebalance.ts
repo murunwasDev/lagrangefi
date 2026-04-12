@@ -195,9 +195,11 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
     fee = position[4]
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    if (!msg.includes('nonexistent token') && !msg.includes('owner query')) {
-      throw e  // unexpected error — propagate
-    }
+    const isNonExistentNft =
+      msg.includes('nonexistent token') ||
+      msg.includes('owner query') ||
+      msg.includes('Invalid token ID')
+    if (!isNonExistentNft) throw e  // unexpected error — propagate
     // Position NFT burned in a previous failed rebalance.
     if (!req.token0 || !req.token1 || req.fee == null) {
       throw new Error(`Position ${req.tokenId} no longer exists and token pair not provided — cannot recover`)
@@ -497,20 +499,26 @@ export async function rebalance(req: RebalanceRequest): Promise<RebalanceResult>
     const gasUsedWei = () => txDetails.reduce((acc, d) => acc + BigInt(d.gasUsedWei), 0n).toString()
 
     try {
-      const recoverTx = await walletClient.writeContract({
-        address: POSITION_MANAGER,
-        abi: POSITION_MANAGER_ABI,
-        functionName: 'collect',
-        args: [{
-          tokenId,
-          recipient: account.address,
-          amount0Max: MAX_UINT128,
-          amount1Max: MAX_UINT128,
-        }],
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-      })
-      await trackTx(recoverTx, 'COLLECT_FEES')
+      // Skip recovery collect if NFT is already burned — it would revert and the tokens
+      // are already in the wallet. Jump straight to the wallet balance read below.
+      if (positionExists) {
+        const recoverTx = await walletClient.writeContract({
+          address: POSITION_MANAGER,
+          abi: POSITION_MANAGER_ABI,
+          functionName: 'collect',
+          args: [{
+            tokenId,
+            recipient: account.address,
+            amount0Max: MAX_UINT128,
+            amount1Max: MAX_UINT128,
+          }],
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+        })
+        await trackTx(recoverTx, 'COLLECT_FEES')
+      } else {
+        throw new Error('NFT already burned — skip to wallet balance read')
+      }
       // Recovery collect succeeded — return collected amounts so API saves them as pending.
       return {
         success: false,

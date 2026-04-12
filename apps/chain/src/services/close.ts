@@ -125,81 +125,99 @@ export async function closePosition(req: CloseRequest): Promise<CloseResult> {
     return receipt
   }
 
-  // 1. Fetch current position
-  const position = await publicClient.readContract({
-    address: POSITION_MANAGER,
-    abi: POSITION_MANAGER_ABI,
-    functionName: 'positions',
-    args: [tokenId],
-  })
-  const liquidity = position[7]
-
-  // 2. Simulate decreaseLiquidity to capture principal before executing
-  // (fees = total_collected - principal)
+  // 1. Fetch current position. If the NFT no longer exists (burned in a prior failed rebalance),
+  //    skip directly to the unwrap step — pending tokens are already in the wallet.
+  let liquidity = 0n
   let principal0 = 0n
   let principal1 = 0n
-  if (liquidity > 0n) {
-    try {
-      const sim = await publicClient.simulateContract({
+  let positionExists = true
+
+  try {
+    const position = await publicClient.readContract({
+      address: POSITION_MANAGER,
+      abi: POSITION_MANAGER_ABI,
+      functionName: 'positions',
+      args: [tokenId],
+    })
+    liquidity = position[7]
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    const isGone =
+      msg.includes('Invalid token ID') ||
+      msg.includes('nonexistent token') ||
+      msg.includes('owner query')
+    if (!isGone) throw e
+    positionExists = false  // NFT already burned — skip to unwrap
+  }
+
+  let collected: { amount0: bigint; amount1: bigint } | undefined
+
+  if (positionExists) {
+    // 2. Simulate decreaseLiquidity to capture principal before executing
+    // (fees = total_collected - principal)
+    if (liquidity > 0n) {
+      try {
+        const sim = await publicClient.simulateContract({
+          address: POSITION_MANAGER,
+          abi: POSITION_MANAGER_ABI,
+          functionName: 'decreaseLiquidity',
+          account: account.address,
+          args: [{ tokenId, liquidity, amount0Min: 0n, amount1Min: 0n, deadline }],
+        })
+        principal0 = sim.result[0]
+        principal1 = sim.result[1]
+      } catch {
+        // non-fatal: fees will be 0 (conservative fallback)
+      }
+
+      const decreaseTx = await walletClient.writeContract({
         address: POSITION_MANAGER,
         abi: POSITION_MANAGER_ABI,
         functionName: 'decreaseLiquidity',
-        account: account.address,
-        args: [{ tokenId, liquidity, amount0Min: 0n, amount1Min: 0n, deadline }],
+        args: [{
+          tokenId,
+          liquidity,
+          amount0Min: 0n,
+          amount1Min: 0n,
+          deadline,
+        }],
+        maxFeePerGas,
+        maxPriorityFeePerGas,
       })
-      principal0 = sim.result[0]
-      principal1 = sim.result[1]
-    } catch {
-      // non-fatal: fees will be 0 (conservative fallback)
+      const decreaseReceipt = await trackTx(decreaseTx, 'REMOVE_LIQUIDITY')
+      if (decreaseReceipt.status === 'reverted') {
+        throw new Error(`decreaseLiquidity reverted (tx: ${decreaseTx})`)
+      }
     }
 
-    const decreaseTx = await walletClient.writeContract({
+    // 3. Execute collect and parse exact amounts from the Collect event
+    const collectTx = await walletClient.writeContract({
       address: POSITION_MANAGER,
       abi: POSITION_MANAGER_ABI,
-      functionName: 'decreaseLiquidity',
+      functionName: 'collect',
       args: [{
         tokenId,
-        liquidity,
-        amount0Min: 0n,
-        amount1Min: 0n,
-        deadline,
+        recipient: account.address,
+        amount0Max: MAX_UINT128,
+        amount1Max: MAX_UINT128,
       }],
       maxFeePerGas,
       maxPriorityFeePerGas,
     })
-    const decreaseReceipt = await trackTx(decreaseTx, 'REMOVE_LIQUIDITY')
-    if (decreaseReceipt.status === 'reverted') {
-      throw new Error(`decreaseLiquidity reverted (tx: ${decreaseTx})`)
-    }
+    const collectReceipt = await trackTx(collectTx, 'COLLECT_FEES')
+    collected = parseTotalCollected(collectReceipt)
+
+    // 4. Burn the NFT
+    const burnTx = await walletClient.writeContract({
+      address: POSITION_MANAGER,
+      abi: POSITION_MANAGER_ABI,
+      functionName: 'burn',
+      args: [tokenId],
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+    })
+    await trackTx(burnTx, 'BURN')
   }
-
-  // 3. Execute collect and parse exact amounts from the Collect event
-  const collectTx = await walletClient.writeContract({
-    address: POSITION_MANAGER,
-    abi: POSITION_MANAGER_ABI,
-    functionName: 'collect',
-    args: [{
-      tokenId,
-      recipient: account.address,
-      amount0Max: MAX_UINT128,
-      amount1Max: MAX_UINT128,
-    }],
-    maxFeePerGas,
-    maxPriorityFeePerGas,
-  })
-  const collectReceipt = await trackTx(collectTx, 'COLLECT_FEES')
-  const collected = parseTotalCollected(collectReceipt)
-
-  // 4. Burn the NFT
-  const burnTx = await walletClient.writeContract({
-    address: POSITION_MANAGER,
-    abi: POSITION_MANAGER_ABI,
-    functionName: 'burn',
-    args: [tokenId],
-    maxFeePerGas,
-    maxPriorityFeePerGas,
-  })
-  await trackTx(burnTx, 'BURN')
 
   // 5. Unwrap WETH from this position + any pending WETH from the last rebalance cycle
   const pending0 = BigInt(req.pendingToken0 ?? '0')

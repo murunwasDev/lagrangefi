@@ -15,7 +15,7 @@ images:
     newTag: sha-d6f2195
   - name: lagrangefi/chain
     newName: ghcr.io/aibob404/lagrangefi-chain
-    newTag: sha-d6f2195
+    newTag: sha-4fe5a6a
   - name: lagrangefi/web
     newName: ghcr.io/aibob404/lagrangefi-web
     newTag: sha-d6f2195

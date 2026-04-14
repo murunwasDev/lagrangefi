@@ -31,20 +31,20 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          password: ${{ secrets.SSH_PASSWORD }}
+          key: ${{ secrets.SSH_KEY }}
           source: deploy.yaml
-          target: /tmp/
+          target: /root/
 
       - name: Apply to cluster and wait for rollout
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          password: ${{ secrets.SSH_PASSWORD }}
+          key: ${{ secrets.SSH_KEY }}
           script_stop: true
           script: |
             echo "==> Applying manifests (branch=${{ github.ref_name }} sha=${{ steps.sha.outputs.short }})"
-            kubectl apply -f /tmp/deploy.yaml
+            kubectl apply -f /root/deploy.yaml
 
             echo "==> Waiting for rollouts"
             for dep in chain api web; do

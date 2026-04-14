@@ -7,6 +7,9 @@ import fi.lagrange.plugins.configureRouting
 import fi.lagrange.plugins.configureSerialization
 import fi.lagrange.plugins.configureStatusPages
 import fi.lagrange.services.ChainClient
+import fi.lagrange.services.StatsAccumulator
+import fi.lagrange.services.StrategyEventRepository
+import fi.lagrange.services.StrategyRepository
 import fi.lagrange.services.StrategyService
 import fi.lagrange.services.TelegramNotifier
 import fi.lagrange.services.UserService
@@ -27,8 +30,11 @@ fun main() {
     val telegramNotifier = TelegramNotifier(config.telegram)
     val userService = UserService()
     val walletService = WalletService(config.wallet.encryptionKey)
-    val strategyService = StrategyService()
-    val scheduler = StrategyScheduler(chainClient, telegramNotifier, walletService, strategyService)
+    val strategyRepo  = StrategyRepository()
+    val eventRepo     = StrategyEventRepository()
+    val statsAccum    = StatsAccumulator()
+    val strategyService = StrategyService(strategyRepo, eventRepo, statsAccum)
+    val scheduler = StrategyScheduler(chainClient, telegramNotifier, walletService, strategyService, strategyRepo)
 
     // Start schedulers for any strategies that were active before restart
     scheduler.loadAndStartAll()

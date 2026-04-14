@@ -51,6 +51,10 @@ object JwtConfig {
     }
 }
 
+class UnauthorizedException(message: String) : Exception(message)
+
 /** Extract the authenticated userId from a JWT-protected call */
 fun ApplicationCall.getUserId(): Int =
-    principal<JWTPrincipal>()!!.payload.getClaim("userId").asInt()
+    principal<JWTPrincipal>()
+        ?.payload?.getClaim("userId")?.asInt()
+        ?: throw UnauthorizedException("Missing or invalid token")

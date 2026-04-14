@@ -23,7 +23,7 @@ object Wallets : Table("wallets") {
 
 object Strategies : Table("strategies") {
     val id = integer("id").autoIncrement()
-    val userId = integer("user_id").references(Users.id)
+    val userId = integer("user_id").references(Users.id).index()
     val name = varchar("name", 128)
     val currentTokenId = varchar("current_token_id", 78)
     val token0 = varchar("token0", 42)

@@ -184,7 +184,8 @@ class ChainClient(private val baseUrl: String) {
         val response = http.get("$baseUrl/positions/$tokenId")
         if (!response.status.isSuccess()) {
             val body = response.bodyAsText()
-            if (body.contains("nonexistent token", ignoreCase = true)) {
+            if (body.contains("nonexistent token", ignoreCase = true) ||
+                body.contains("Invalid token ID", ignoreCase = true)) {
                 throw PositionNotFoundException("Position $tokenId no longer exists on-chain")
             }
             error("Chain service error ${response.status} for position $tokenId: $body")
@@ -192,8 +193,18 @@ class ChainClient(private val baseUrl: String) {
         return response.body()
     }
 
-    suspend fun getPoolState(tokenId: String): PoolStateResponse =
-        http.get("$baseUrl/positions/$tokenId/pool-state").body()
+    suspend fun getPoolState(tokenId: String): PoolStateResponse {
+        val response = http.get("$baseUrl/positions/$tokenId/pool-state")
+        if (!response.status.isSuccess()) {
+            val body = response.bodyAsText()
+            if (body.contains("nonexistent token", ignoreCase = true) ||
+                body.contains("Invalid token ID", ignoreCase = true)) {
+                throw PositionNotFoundException("Position $tokenId no longer exists on-chain")
+            }
+            error("Chain service error ${response.status} for pool-state $tokenId: $body")
+        }
+        return response.body()
+    }
 
     suspend fun getPoolByPair(token0: String, token1: String, fee: Int): PoolStateResponse =
         http.get("$baseUrl/pool") {

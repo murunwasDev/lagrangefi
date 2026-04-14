@@ -38,6 +38,9 @@ object DatabaseConfig {
                 StrategySnapshots,
             )
 
+            // Index: strategies.user_id — SchemaUtils won't add indexes to existing tables
+            exec("CREATE INDEX IF NOT EXISTS strategies_user_id ON strategies(user_id);")
+
             // Trigger: enforce rebalance_details.strategy_id == strategy_events.strategy_id
             exec("""
                 CREATE OR REPLACE FUNCTION check_rebalance_details_strategy_id()

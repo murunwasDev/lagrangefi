@@ -26,7 +26,7 @@ fun main() {
 
     JwtConfig.init(config.jwt.secret)
 
-    val chainClient = ChainClient(config.chainServiceUrl)
+    val chainClient = ChainClient(config.chain.serviceUrl, config.chain.sharedSecret)
     val telegramNotifier = TelegramNotifier(config.telegram)
     val userService = UserService()
     val walletService = WalletService(config.wallet.encryptionKey)

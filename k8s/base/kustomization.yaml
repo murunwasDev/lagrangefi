@@ -7,6 +7,8 @@ resources:
   - web/deployment.yaml
   - web/service.yaml
   - web/ingress.yaml
+  - web/auth-ingress.yaml
+  - web/auth-ratelimit-middleware.yaml
   - worker/api-deployment.yaml
   - worker/api-service.yaml
   - worker/chain-deployment.yaml

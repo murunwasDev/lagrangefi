@@ -12,6 +12,8 @@ export const config = {
   rpcUrl: requireEnv('ARBITRUM_RPC_URL'),
   /** Default wallet private key — optional when per-request walletPrivateKey is always provided */
   defaultPrivateKey: process.env['WALLET_PRIVATE_KEY'] as `0x${string}` | undefined,
+  /** Shared HMAC secret used to authenticate requests from the api service */
+  sharedSecret: requireEnv('CHAIN_SHARED_SECRET'),
 }
 
 export const publicClient = createPublicClient({

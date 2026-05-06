@@ -6,7 +6,7 @@ import com.sksamuel.hoplite.addResourceOrFileSource
 data class AppConfig(
     val host: String = "0.0.0.0",
     val port: Int = 3000,
-    val chainServiceUrl: String,
+    val chain: ChainSettings,
     val database: DatabaseSettings,
     val telegram: TelegramSettings,
     val jwt: JwtSettings,
@@ -20,6 +20,12 @@ data class AppConfig(
                 .loadConfigOrThrow()
     }
 }
+
+data class ChainSettings(
+    val serviceUrl: String,
+    /** Shared HMAC secret used to authenticate requests to the chain service */
+    val sharedSecret: String,
+)
 
 data class DatabaseSettings(
     val url: String,

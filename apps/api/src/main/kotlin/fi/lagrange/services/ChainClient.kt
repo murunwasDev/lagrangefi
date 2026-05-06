@@ -3,14 +3,32 @@ package fi.lagrange.services
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.HttpSend
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.client.plugins.plugin
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.http.content.TextContent
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.serializer
+import java.security.MessageDigest
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+
+private val signingJson = Json { ignoreUnknownKeys = true }
+
+/** Serialize [value] with kotlinx.serialization and set it as a TextContent body so the request body
+ * bytes are stable and inspectable from `request.body` inside the HMAC signing interceptor. */
+private inline fun <reified T> HttpRequestBuilder.jsonBody(value: T) {
+    contentType(ContentType.Application.Json)
+    val text = signingJson.encodeToString(serializer<T>(), value)
+    setBody(TextContent(text, ContentType.Application.Json))
+}
 
 /** Thrown when the chain service reports that a Uniswap NFT position no longer exists on-chain. */
 class PositionNotFoundException(message: String) : Exception(message)
@@ -107,6 +125,9 @@ data class WalletBalancesResponse(
 )
 
 @Serializable
+private data class WalletBalancesRequest(val walletPrivateKey: String)
+
+@Serializable
 data class RebalanceRequest(
     val idempotencyKey: String,
     val tokenId: String,
@@ -156,12 +177,15 @@ data class MintResponse(
     val leftoverToken1: String? = null,
 )
 
-class ChainClient(private val baseUrl: String) {
+class ChainClient(
+    private val baseUrl: String,
+    sharedSecret: String,
+) {
     private val http = HttpClient(CIO) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
         }
-    }
+    }.also { it.installHmacSigning(sharedSecret) }
 
     // Rebalance and close involve multiple sequential on-chain transactions — use a long timeout.
     private val longHttp = HttpClient(CIO) {
@@ -172,12 +196,11 @@ class ChainClient(private val baseUrl: String) {
             requestTimeoutMillis = 5 * 60 * 1_000L  // 5 minutes
             socketTimeoutMillis  = 5 * 60 * 1_000L
         }
-    }
+    }.also { it.installHmacSigning(sharedSecret) }
 
     suspend fun getWalletBalances(walletPhrase: String): WalletBalancesResponse =
         http.post("$baseUrl/wallet/balances") {
-            contentType(ContentType.Application.Json)
-            setBody(mapOf("walletPrivateKey" to walletPhrase))
+            jsonBody(WalletBalancesRequest(walletPhrase))
         }.body()
 
     suspend fun getPosition(tokenId: String): PositionResponse {
@@ -215,8 +238,7 @@ class ChainClient(private val baseUrl: String) {
 
     suspend fun mint(req: MintRequest): MintResponse =
         http.post("$baseUrl/mint") {
-            contentType(ContentType.Application.Json)
-            setBody(req)
+            jsonBody(req)
         }.body()
 
     suspend fun close(
@@ -227,8 +249,7 @@ class ChainClient(private val baseUrl: String) {
         pendingToken1: String = "0",
     ): CloseResponse =
         longHttp.post("$baseUrl/execute/close") {
-            contentType(ContentType.Application.Json)
-            setBody(CloseRequest(
+            jsonBody(CloseRequest(
                 idempotencyKey = idempotencyKey,
                 tokenId = tokenId,
                 walletPrivateKey = walletPrivateKey,
@@ -253,8 +274,7 @@ class ChainClient(private val baseUrl: String) {
         fee: Int? = null,
     ): RebalanceResponse =
         longHttp.post("$baseUrl/execute/rebalance") {
-            contentType(ContentType.Application.Json)
-            setBody(RebalanceRequest(
+            jsonBody(RebalanceRequest(
                 idempotencyKey = idempotencyKey,
                 tokenId = tokenId,
                 newTickLower = newTickLower,
@@ -268,4 +288,37 @@ class ChainClient(private val baseUrl: String) {
                 fee = fee,
             ))
         }.body()
+}
+
+/**
+ * Sign every outgoing request with HMAC-SHA256 over `${timestamp}\n${method}\n${path}\n${sha256(body)}`.
+ * The chain service rejects requests with a missing/invalid signature or a timestamp outside ±5min.
+ *
+ * Hooked on HttpSend (the documented public extension point), so header mutations on `request.headers`
+ * are guaranteed to land on the actual outgoing HTTP request. POST callsites use `jsonBody(...)` so
+ * `request.body` is always TextContent and the same bytes the chain side will hash.
+ */
+private fun HttpClient.installHmacSigning(secret: String) {
+    plugin(HttpSend).intercept { request ->
+        val timestamp = System.currentTimeMillis().toString()
+        val method = request.method.value
+        val path = request.url.build().encodedPathAndQuery
+        val bodyText = (request.body as? TextContent)?.text ?: ""
+        val canonical = "$timestamp\n$method\n$path\n${sha256Hex(bodyText)}"
+        val signature = hmacSha256Hex(secret, canonical)
+        request.headers.append("X-Timestamp", timestamp)
+        request.headers.append("X-Signature", signature)
+        execute(request)
+    }
+}
+
+private fun sha256Hex(input: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
+    return digest.joinToString("") { "%02x".format(it) }
+}
+
+private fun hmacSha256Hex(secret: String, message: String): String {
+    val mac = Mac.getInstance("HmacSHA256")
+    mac.init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+    return mac.doFinal(message.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 }

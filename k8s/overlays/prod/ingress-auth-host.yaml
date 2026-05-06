@@ -3,7 +3,7 @@ kind: Ingress
 metadata:
   name: auth
   annotations:
-    traefik.ingress.kubernetes.io/router.middlewares: prod-auth-ratelimit@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: lagrangefi-prod-auth-ratelimit@kubernetescrd
 spec:
   rules:
     - host: lagrangefi.ai-bob.pro

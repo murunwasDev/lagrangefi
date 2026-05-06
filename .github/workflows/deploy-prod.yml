@@ -17,7 +17,7 @@ on:
 
 env:
   OWNER: aibob404
-  NAMESPACE: prod
+  NAMESPACE: lagrangefi-prod
 
 permissions:
   contents: read

@@ -95,7 +95,7 @@ See **[.claude/skills/db/schema.md](.claude/skills/db/schema.md)** for the full 
 
 ## CI/CD pipelines
 
-Two GitHub Actions workflows:
+Three GitHub Actions workflows:
 
 1. **Build and Push Images** (`ci.yml`) — builds Docker images for changed services and pushes to GHCR.
    - On `push` to `main`: only rebuilds services with changed files (path filtering via `dorny/paths-filter`).
@@ -104,11 +104,17 @@ Two GitHub Actions workflows:
 
 2. **Deploy to Test** (`deploy-test.yml`) — `workflow_dispatch` only. Patches the image tag in `k8s/overlays/test/kustomization.yaml` to the current commit SHA, generates manifests with `kubectl kustomize`, copies them to the cluster via SCP, and applies with `kubectl apply`.
 
+3. **Deploy to Prod** (`deploy-prod.yml`) — `workflow_dispatch` only, with two required inputs:
+   - `confirm` — must equal `DEPLOY TO PROD` (typo guard)
+   - `image_tag` — short commit SHA to deploy (defaults to current commit SHA)
+
+   Runs the same patch + apply pipeline against `k8s/overlays/prod`, plus pre-flight checks: GHCR images exist for the chosen tag, all required Secrets are present in the `prod` namespace, and `CHAIN_SHARED_SECRET` matches between `api-secret` and `chain-secret`. Aborts before applying if any check fails. The deploy host is `lagrangefi.ai-bob.pro` (DNS must point at the cluster ingress IP for cert-manager).
+
 **To deploy a feature branch to test:**
 1. Run **Build and Push Images** on the branch — wait for it to succeed.
 2. Run **Deploy to Test** on the same branch.
 
-Test environment is at http://$SERVER_IP/. There is no automatic deploy on PR push — both steps must be triggered manually for feature branches.
+Test environment is at https://lagrangefi-test.ai-bob.pro/. There is no automatic deploy on PR push — both steps must be triggered manually for feature branches.
 
 ## Kubernetes
 

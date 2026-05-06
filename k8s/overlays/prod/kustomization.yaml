@@ -1,7 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: prod
+namespace: lagrangefi-prod
 
 bases:
   - ../../base
@@ -27,12 +27,12 @@ images:
 # ─── Secrets ──────────────────────────────────────────────────────────────────
 #
 # postgres-secret  (used by postgres StatefulSet)
-#   kubectl create secret generic postgres-secret -n prod \
+#   kubectl create secret generic postgres-secret -n lagrangefi-prod \
 #     --from-literal=user=lagrangefi \
 #     --from-literal=password=<DB_PASSWORD>
 #
 # api-secret  (used by the api Deployment)
-#   kubectl create secret generic api-secret -n prod \
+#   kubectl create secret generic api-secret -n lagrangefi-prod \
 #     --from-literal=DATABASE_PASSWORD=<DB_PASSWORD> \
 #     --from-literal=TELEGRAM_BOT_TOKEN=<TOKEN> \
 #     --from-literal=JWT_SECRET=<random 64-char string> \
@@ -44,7 +44,7 @@ images:
 #   Generate CHAIN_SHARED_SECRET:    openssl rand -hex 32
 #
 # chain-secret  (chain side of the HMAC pair — must hold the SAME value as api-secret's CHAIN_SHARED_SECRET)
-#   kubectl create secret generic chain-secret -n prod \
+#   kubectl create secret generic chain-secret -n lagrangefi-prod \
 #     --from-literal=CHAIN_SHARED_SECRET=<same value as above>
 #
 #   Wallet private keys are NOT stored on chain — provided per-request by api.
@@ -52,13 +52,13 @@ images:
 # ─── ConfigMaps ───────────────────────────────────────────────────────────────
 #
 # api-config
-#   kubectl create configmap api-config -n prod \
+#   kubectl create configmap api-config -n lagrangefi-prod \
 #     --from-literal=CHAIN_SERVICE_URL=http://chain:3001 \
 #     --from-literal=DATABASE_URL=postgresql://postgres:5432/lagrangefi \
 #     --from-literal=DATABASE_USER=lagrangefi \
 #     --from-literal=TELEGRAM_CHAT_ID=<chat_id>
 #
 # chain-config
-#   kubectl create configmap chain-config -n prod \
+#   kubectl create configmap chain-config -n lagrangefi-prod \
 #     --from-literal=ARBITRUM_RPC_URL=https://arb-mainnet.g.alchemy.com/v2/<key> \
 #     --from-literal=PORT=3001

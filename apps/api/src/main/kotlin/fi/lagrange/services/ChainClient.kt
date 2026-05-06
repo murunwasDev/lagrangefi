@@ -3,19 +3,32 @@ package fi.lagrange.services
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.HttpSend
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.client.plugins.plugin
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import io.ktor.http.content.OutgoingContent
 import io.ktor.http.content.TextContent
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.serializer
 import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+
+private val signingJson = Json { ignoreUnknownKeys = true }
+
+/** Serialize [value] with kotlinx.serialization and set it as a TextContent body so the request body
+ * bytes are stable and inspectable from `request.body` inside the HMAC signing interceptor. */
+private inline fun <reified T> HttpRequestBuilder.jsonBody(value: T) {
+    contentType(ContentType.Application.Json)
+    val text = signingJson.encodeToString(serializer<T>(), value)
+    setBody(TextContent(text, ContentType.Application.Json))
+}
 
 /** Thrown when the chain service reports that a Uniswap NFT position no longer exists on-chain. */
 class PositionNotFoundException(message: String) : Exception(message)
@@ -112,6 +125,9 @@ data class WalletBalancesResponse(
 )
 
 @Serializable
+private data class WalletBalancesRequest(val walletPrivateKey: String)
+
+@Serializable
 data class RebalanceRequest(
     val idempotencyKey: String,
     val tokenId: String,
@@ -184,8 +200,7 @@ class ChainClient(
 
     suspend fun getWalletBalances(walletPhrase: String): WalletBalancesResponse =
         http.post("$baseUrl/wallet/balances") {
-            contentType(ContentType.Application.Json)
-            setBody(mapOf("walletPrivateKey" to walletPhrase))
+            jsonBody(WalletBalancesRequest(walletPhrase))
         }.body()
 
     suspend fun getPosition(tokenId: String): PositionResponse {
@@ -223,8 +238,7 @@ class ChainClient(
 
     suspend fun mint(req: MintRequest): MintResponse =
         http.post("$baseUrl/mint") {
-            contentType(ContentType.Application.Json)
-            setBody(req)
+            jsonBody(req)
         }.body()
 
     suspend fun close(
@@ -235,8 +249,7 @@ class ChainClient(
         pendingToken1: String = "0",
     ): CloseResponse =
         longHttp.post("$baseUrl/execute/close") {
-            contentType(ContentType.Application.Json)
-            setBody(CloseRequest(
+            jsonBody(CloseRequest(
                 idempotencyKey = idempotencyKey,
                 tokenId = tokenId,
                 walletPrivateKey = walletPrivateKey,
@@ -261,8 +274,7 @@ class ChainClient(
         fee: Int? = null,
     ): RebalanceResponse =
         longHttp.post("$baseUrl/execute/rebalance") {
-            contentType(ContentType.Application.Json)
-            setBody(RebalanceRequest(
+            jsonBody(RebalanceRequest(
                 idempotencyKey = idempotencyKey,
                 tokenId = tokenId,
                 newTickLower = newTickLower,
@@ -282,24 +294,21 @@ class ChainClient(
  * Sign every outgoing request with HMAC-SHA256 over `${timestamp}\n${method}\n${path}\n${sha256(body)}`.
  * The chain service rejects requests with a missing/invalid signature or a timestamp outside ±5min.
  *
- * Hooked on HttpRequestPipeline.Send (after ContentNegotiation has transformed the subject into
- * OutgoingContent), so we can read the rendered JSON bytes that will actually go on the wire.
+ * Hooked on HttpSend (the documented public extension point), so header mutations on `request.headers`
+ * are guaranteed to land on the actual outgoing HTTP request. POST callsites use `jsonBody(...)` so
+ * `request.body` is always TextContent and the same bytes the chain side will hash.
  */
 private fun HttpClient.installHmacSigning(secret: String) {
-    requestPipeline.intercept(HttpRequestPipeline.Send) { content ->
-        val request = context
+    plugin(HttpSend).intercept { request ->
         val timestamp = System.currentTimeMillis().toString()
         val method = request.method.value
         val path = request.url.build().encodedPathAndQuery
-        val bodyText = when (val outgoing = content as? OutgoingContent) {
-            is TextContent -> outgoing.text
-            is OutgoingContent.NoContent, null -> ""
-            else -> ""
-        }
+        val bodyText = (request.body as? TextContent)?.text ?: ""
         val canonical = "$timestamp\n$method\n$path\n${sha256Hex(bodyText)}"
         val signature = hmacSha256Hex(secret, canonical)
         request.headers.append("X-Timestamp", timestamp)
         request.headers.append("X-Signature", signature)
+        execute(request)
     }
 }
 

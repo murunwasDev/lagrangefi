@@ -4,16 +4,9 @@ metadata:
   name: web
 spec:
   rules:
-    - host: lagrangefi.xyz
+    - host: lagrangefi.ai-bob.pro
       http:
         paths:
-          - path: /auth
-            pathType: Prefix
-            backend:
-              service:
-                name: api
-                port:
-                  number: 3000
           - path: /me
             pathType: Prefix
             backend:
@@ -35,3 +28,7 @@ spec:
                 name: web
                 port:
                   number: 80
+  tls:
+    - hosts:
+        - lagrangefi.ai-bob.pro
+      secretName: web-tls

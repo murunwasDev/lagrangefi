@@ -1,38 +1,28 @@
+# Dedicated ingress for /auth/* paths so the auth-ratelimit Middleware can be applied
+# without throttling the rest of the dashboard. The middleware namespace prefix is
+# substituted per overlay (test → test-auth-ratelimit, prod → prod-auth-ratelimit).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: web
+  name: auth
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.middlewares: PLACEHOLDER_NAMESPACE-auth-ratelimit@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:
     - host: PLACEHOLDER_HOST
       http:
         paths:
-          - path: /me
+          - path: /auth
             pathType: Prefix
             backend:
               service:
                 name: api
                 port:
                   number: 3000
-          - path: /api/v1
-            pathType: Prefix
-            backend:
-              service:
-                name: api
-                port:
-                  number: 3000
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: web
-                port:
-                  number: 80
   tls:
     - hosts:
         - PLACEHOLDER_HOST
-      secretName: web-tls
+      secretName: auth-tls

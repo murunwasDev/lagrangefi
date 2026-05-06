@@ -8,9 +8,14 @@ import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.http.content.OutgoingContent
+import io.ktor.http.content.TextContent
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.security.MessageDigest
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 /** Thrown when the chain service reports that a Uniswap NFT position no longer exists on-chain. */
 class PositionNotFoundException(message: String) : Exception(message)
@@ -156,12 +161,15 @@ data class MintResponse(
     val leftoverToken1: String? = null,
 )
 
-class ChainClient(private val baseUrl: String) {
+class ChainClient(
+    private val baseUrl: String,
+    sharedSecret: String,
+) {
     private val http = HttpClient(CIO) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
         }
-    }
+    }.also { it.installHmacSigning(sharedSecret) }
 
     // Rebalance and close involve multiple sequential on-chain transactions — use a long timeout.
     private val longHttp = HttpClient(CIO) {
@@ -172,7 +180,7 @@ class ChainClient(private val baseUrl: String) {
             requestTimeoutMillis = 5 * 60 * 1_000L  // 5 minutes
             socketTimeoutMillis  = 5 * 60 * 1_000L
         }
-    }
+    }.also { it.installHmacSigning(sharedSecret) }
 
     suspend fun getWalletBalances(walletPhrase: String): WalletBalancesResponse =
         http.post("$baseUrl/wallet/balances") {
@@ -268,4 +276,47 @@ class ChainClient(private val baseUrl: String) {
                 fee = fee,
             ))
         }.body()
+}
+
+/**
+ * Sign every outgoing request with HMAC-SHA256 over `${timestamp}\n${method}\n${path}\n${sha256(body)}`.
+ * The chain service rejects requests with a missing/invalid signature or a timestamp outside ±5min.
+ *
+ * Hooked on HttpRequestPipeline.Send (after ContentNegotiation has transformed the subject into
+ * OutgoingContent), so we can read the rendered JSON bytes that will actually go on the wire.
+ */
+private fun HttpClient.installHmacSigning(secret: String) {
+    requestPipeline.intercept(HttpRequestPipeline.Send) { content ->
+        val request = context
+        val timestamp = System.currentTimeMillis().toString()
+        val method = request.method.value
+        val path = buildString {
+            append(request.url.encodedPath)
+            val q = request.url.encodedQuery
+            if (q.isNotEmpty()) {
+                append('?')
+                append(q)
+            }
+        }
+        val bodyText = when (val outgoing = content as? OutgoingContent) {
+            is TextContent -> outgoing.text
+            is OutgoingContent.NoContent, null -> ""
+            else -> ""
+        }
+        val canonical = "$timestamp\n$method\n$path\n${sha256Hex(bodyText)}"
+        val signature = hmacSha256Hex(secret, canonical)
+        request.headers.append("X-Timestamp", timestamp)
+        request.headers.append("X-Signature", signature)
+    }
+}
+
+private fun sha256Hex(input: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
+    return digest.joinToString("") { "%02x".format(it) }
+}
+
+private fun hmacSha256Hex(secret: String, message: String): String {
+    val mac = Mac.getInstance("HmacSHA256")
+    mac.init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+    return mac.doFinal(message.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 }

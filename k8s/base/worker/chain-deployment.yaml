@@ -20,8 +20,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: chain-config
-          # No secrets needed: wallet keys are provided per-request by the api service.
-          # WALLET_PRIVATE_KEY env var is no longer used.
+            - secretRef:
+                name: chain-secret
+          # chain-secret holds CHAIN_SHARED_SECRET (HMAC key for verifying api requests).
+          # Wallet keys are still provided per-request by the api service — never stored here.
           resources:
             requests:
               cpu: 100m

@@ -6,6 +6,7 @@ bases:
 patches:
   - path: resources.yaml
   - path: ingress-host.yaml
+  - path: ingress-auth-host.yaml
   - path: image-pull.yaml
 # Image tags are updated automatically by CI on every push to main.
 # To deploy manually: kubectl apply -k k8s/overlays/test
@@ -31,13 +32,18 @@ images:
 #     --from-literal=DATABASE_PASSWORD=<DB_PASSWORD> \
 #     --from-literal=TELEGRAM_BOT_TOKEN=<TOKEN> \
 #     --from-literal=JWT_SECRET=<random 64-char string> \
-#     --from-literal=WALLET_ENCRYPTION_KEY=<base64 of 32 random bytes>
+#     --from-literal=WALLET_ENCRYPTION_KEY=<base64 of 32 random bytes> \
+#     --from-literal=CHAIN_SHARED_SECRET=<random 64-char string>
 #
 #   Generate WALLET_ENCRYPTION_KEY:  openssl rand -base64 32
 #   Generate JWT_SECRET:             openssl rand -hex 32
+#   Generate CHAIN_SHARED_SECRET:    openssl rand -hex 32
 #
-# chain-secret is NO LONGER NEEDED.
-#   Wallet private keys are provided per-request by the api service.
+# chain-secret  (chain side of the HMAC pair — must hold the SAME value as api-secret's CHAIN_SHARED_SECRET)
+#   kubectl create secret generic chain-secret -n test \
+#     --from-literal=CHAIN_SHARED_SECRET=<same value as above>
+#
+#   Wallet private keys are still NOT stored on chain — provided per-request by api.
 #
 # ─── ConfigMaps ───────────────────────────────────────────────────────────────
 #

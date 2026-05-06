@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: auth
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: test-auth-ratelimit@kubernetescrd
+spec:
+  rules:
+    - host: lagrangefi-test.ai-bob.pro
+      http:
+        paths:
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 3000
+  tls:
+    - hosts:
+        - lagrangefi-test.ai-bob.pro
+      secretName: auth-tls

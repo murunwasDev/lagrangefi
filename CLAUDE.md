@@ -5,6 +5,8 @@ This file guides Claude Code when working in this repository.
 ## Documentation
 
 - **[docs/BEST_PRACTICES.md](docs/BEST_PRACTICES.md)** — Coding standards, architectural patterns, and rules for every module (`api/`, `chain/`, `web/`, `k8s/`, CI/CD). Includes a prioritised TODO list of known issues. Read this before making changes to any service.
+- **[docs/reviews/](docs/reviews/)** — Review playbooks (security, api-style, chain-style, frontend-style, api-contracts, database, on-chain-safety, numerical-correctness, observability, testing, ci-cd, infrastructure). Top-to-bottom audit checklists with file references and inspection commands.
+- **[docs/runbooks/](docs/runbooks/)** — Operational runbooks (e.g. `WALLET_ENCRYPTION_KEY` rotation).
 - **[.claude/skills/db/schema.md](.claude/skills/db/schema.md)** — Database schema reference used by the `/db` skill. **Must be kept in sync with `apps/api/src/main/kotlin/fi/lagrange/model/Tables.kt`.** Any time you add, remove, or rename a table or column in `Tables.kt`, update `schema.md` in the same commit.
 
 ## Project overview
@@ -38,6 +40,8 @@ k8s/          Kubernetes manifests (Kustomize, overlays: prod / test)
 
 ### Wallet key flow
 The API decrypts the user's wallet phrase and forwards it to the chain service **per-request** in the `walletPrivateKey` field of `RebalanceRequest`. The chain service never stores keys. It creates a temporary wallet client for the duration of that request. `WALLET_PRIVATE_KEY` env var on the chain service is no longer required (only the API holds wallet data).
+
+Every request from api to chain is signed with HMAC-SHA256 over `${timestamp}\n${method}\n${path}\n${sha256(body)}` using `CHAIN_SHARED_SECRET`, with `X-Timestamp` and `X-Signature` headers. The chain service rejects unsigned, mis-signed, or stale (±5 min) requests with 401. NetworkPolicy is the second layer; HMAC is the first.
 
 ### Strategy pattern (extensibility)
 `api/` uses a `ProtocolStrategy` interface for rebalance logic. v1 implements `UniswapStrategy`. When adding AAVE (v2), add `DeltaNeutralStrategy` — do not modify existing strategy code.
@@ -120,16 +124,17 @@ Test environment is at http://$SERVER_IP/. There is no automatic deploy on PR pu
 | Secret | Namespace | Keys |
 |--------|-----------|------|
 | `postgres-secret` | prod, test | `user`, `password` |
-| `api-secret` | prod, test | `DATABASE_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `JWT_SECRET`, `WALLET_ENCRYPTION_KEY` |
+| `api-secret` | prod, test | `DATABASE_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `JWT_SECRET`, `WALLET_ENCRYPTION_KEY`, `CHAIN_SHARED_SECRET` |
+| `chain-secret` | prod, test | `CHAIN_SHARED_SECRET` (must match the value in `api-secret`) |
 
-`chain-secret` has been **removed** — the chain service no longer holds wallet keys. Wallets are per-user, encrypted in the database, and forwarded by the api on each request.
+The chain service still does not hold wallet keys — wallets are per-user, encrypted in the database, and forwarded by the api on each request. `chain-secret` only carries the HMAC shared secret used to authenticate api → chain requests.
 
 Generate secrets:
 ```bash
 # WALLET_ENCRYPTION_KEY (32-byte AES key, base64)
 openssl rand -base64 32
 
-# JWT_SECRET
+# JWT_SECRET, CHAIN_SHARED_SECRET (hex)
 openssl rand -hex 32
 ```
 

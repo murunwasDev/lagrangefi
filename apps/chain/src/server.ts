@@ -1,4 +1,6 @@
 import Fastify from 'fastify'
+import { config } from './config.js'
+import { registerHmacAuth } from './middleware/hmacAuth.js'
 import { positionRoutes } from './routes/position.js'
 import { executeRoutes } from './routes/execute.js'
 import { mintRoutes } from './routes/mint.js'
@@ -9,6 +11,8 @@ export async function buildServer() {
   const server = Fastify({
     logger: true,
   })
+
+  await registerHmacAuth(server, config.sharedSecret)
 
   await server.register(positionRoutes, { prefix: '/positions' })
   await server.register(executeRoutes, { prefix: '/execute' })

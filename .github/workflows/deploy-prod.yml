@@ -1,0 +1,161 @@
+name: Deploy to Prod
+
+# Manual-only. To gate this further, attach this job to a GitHub Environment
+# named "production" with required reviewers in repo settings.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (short commit SHA, e.g. 0089901). Defaults to the current commit."
+        required: false
+        type: string
+      confirm:
+        description: "Type 'DEPLOY TO PROD' to confirm."
+        required: true
+        type: string
+
+env:
+  OWNER: aibob404
+  NAMESPACE: prod
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # environment: production   # uncomment after creating the GitHub Environment
+    steps:
+      - name: Verify confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "DEPLOY TO PROD" ]; then
+            echo "::error::confirm input must be exactly 'DEPLOY TO PROD' (got: '${{ inputs.confirm }}')"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            TAG="${{ inputs.image_tag }}"
+          else
+            TAG="${GITHUB_SHA::7}"
+          fi
+          # Strip a leading "sha-" if the user typed it
+          TAG="${TAG#sha-}"
+          echo "short=$TAG" >> $GITHUB_OUTPUT
+          echo "Deploying tag: sha-$TAG"
+
+      - name: Verify images exist in GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="sha-${{ steps.tag.outputs.short }}"
+          MISSING=0
+          for svc in api chain web; do
+            if gh api -H "Accept: application/vnd.github+json" \
+                "/users/${OWNER}/packages/container/lagrangefi-${svc}/versions" \
+                --jq '.[].metadata.container.tags[]' 2>/dev/null | grep -qx "$TAG"; then
+              echo "OK   ghcr.io/${OWNER}/lagrangefi-${svc}:${TAG}"
+            else
+              echo "MISS ghcr.io/${OWNER}/lagrangefi-${svc}:${TAG}"
+              MISSING=1
+            fi
+          done
+          if [ "$MISSING" = "1" ]; then
+            echo "::error::One or more images missing in GHCR — run 'Build and Push Images' first."
+            exit 1
+          fi
+
+      - name: Patch image tags
+        run: |
+          TAG="sha-${{ steps.tag.outputs.short }}"
+          sed -i "s/newTag: sha-[a-f0-9]*\|newTag: sha-placeholder/newTag: $TAG/g" k8s/overlays/prod/kustomization.yaml
+          grep newTag k8s/overlays/prod/kustomization.yaml
+
+      - name: Generate manifests
+        run: kubectl kustomize k8s/overlays/prod > deploy.yaml
+
+      - name: Copy manifests to cluster
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: deploy.yaml
+          target: /root/
+
+      - name: Pre-flight checks on cluster
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script_stop: true
+          script: |
+            echo "==> Checking required secrets in namespace ${NAMESPACE}"
+            FAIL=0
+            for s in postgres-secret api-secret chain-secret; do
+              if ! kubectl get secret "$s" -n ${{ env.NAMESPACE }} >/dev/null 2>&1; then
+                echo "MISSING: secret/$s in namespace ${{ env.NAMESPACE }}"
+                FAIL=1
+              else
+                echo "OK     : secret/$s"
+              fi
+            done
+
+            for s_key in api-secret:CHAIN_SHARED_SECRET api-secret:WALLET_ENCRYPTION_KEY api-secret:JWT_SECRET chain-secret:CHAIN_SHARED_SECRET; do
+              SECRET="${s_key%:*}"
+              KEY="${s_key#*:}"
+              if ! kubectl get secret "$SECRET" -n ${{ env.NAMESPACE }} -o jsonpath="{.data.$KEY}" 2>/dev/null | grep -q .; then
+                echo "MISSING: $SECRET[$KEY]"
+                FAIL=1
+              else
+                echo "OK     : $SECRET[$KEY] is set"
+              fi
+            done
+
+            # Sanity: api+chain CHAIN_SHARED_SECRET must match
+            API_HMAC=$(kubectl get secret api-secret -n ${{ env.NAMESPACE }} -o jsonpath='{.data.CHAIN_SHARED_SECRET}')
+            CHAIN_HMAC=$(kubectl get secret chain-secret -n ${{ env.NAMESPACE }} -o jsonpath='{.data.CHAIN_SHARED_SECRET}')
+            if [ "$API_HMAC" != "$CHAIN_HMAC" ]; then
+              echo "::error::api-secret and chain-secret have different CHAIN_SHARED_SECRET values — chain will reject every api request"
+              FAIL=1
+            else
+              echo "OK     : CHAIN_SHARED_SECRET matches between api-secret and chain-secret"
+            fi
+
+            if [ "$FAIL" = "1" ]; then
+              echo "::error::Pre-flight checks failed. Fix the issues above before re-running."
+              exit 1
+            fi
+
+      - name: Apply to cluster and wait for rollout
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script_stop: true
+          script: |
+            echo "==> Applying manifests (branch=${{ github.ref_name }} tag=sha-${{ steps.tag.outputs.short }})"
+            kubectl apply -f /root/deploy.yaml
+
+            echo "==> Waiting for rollouts"
+            FAIL=0
+            for dep in chain api web; do
+              if ! kubectl rollout status deployment/$dep -n ${{ env.NAMESPACE }} --timeout=180s; then
+                echo "::error::$dep rollout failed/timed out"
+                kubectl logs -n ${{ env.NAMESPACE }} deployment/$dep --tail=80 || true
+                FAIL=1
+              fi
+            done
+
+            echo "==> Pods"
+            kubectl get pods -n ${{ env.NAMESPACE }}
+
+            if [ "$FAIL" = "1" ]; then exit 1; fi

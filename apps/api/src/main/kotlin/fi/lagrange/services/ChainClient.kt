@@ -290,14 +290,7 @@ private fun HttpClient.installHmacSigning(secret: String) {
         val request = context
         val timestamp = System.currentTimeMillis().toString()
         val method = request.method.value
-        val path = buildString {
-            append(request.url.encodedPath)
-            val q = request.url.encodedQuery
-            if (q.isNotEmpty()) {
-                append('?')
-                append(q)
-            }
-        }
+        val path = request.url.build().encodedPathAndQuery
         val bodyText = when (val outgoing = content as? OutgoingContent) {
             is TextContent -> outgoing.text
             is OutgoingContent.NoContent, null -> ""
